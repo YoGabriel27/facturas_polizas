@@ -25,30 +25,8 @@
   box-sizing: border-box;
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
-  color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --papel: #0c1320;
-    --superficie: #141d2d;
-    --tinta: #dbe5f5;
-    --acento: #8fb4f0;
-    --acento-suave: #1c2b45;
-    --texto: #e3e9f3;
-    --tenue: #9aa6ba;
-    --linea: #2b3850;
-    --rojo: #f08a8a;
-    --rojo-suave: #3b1f24;
-    --ambar: #e4b25f;
-    --ambar-suave: #3a2f1b;
-    --ok: #7ccf9b;
-    --ok-suave: #1b3326;
-    --barra: #091426;
-    --barra-texto: #dbe5f5;
-    --tarjeta: #13305f;
-    --tarjeta-texto: #eef3fb;
-  }
+  /* Siempre en modo claro, también con el celular en modo oscuro */
+  color-scheme: only light;
 }
 
 *, *::before, *::after { box-sizing: inherit; }

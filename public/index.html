@@ -29,6 +29,7 @@
     <nav id="nav" hidden>
       <a href="#/facturas" data-ruta="facturas">Facturas</a>
       <a href="#/entidades" data-ruta="entidades">Organismos</a>
+      <button type="button" id="reporte-cc" class="nav-accion">↑ Reporte CC</button>
       <a href="#/importar" data-ruta="importar" class="nav-accion">Importar PDF</a>
       <button type="button" id="instalar" class="nav-instalar" hidden>Instalar app</button>
     </nav>
@@ -37,6 +38,9 @@
   <main id="app" tabindex="-1">
     <p class="cargando">Cargando…</p>
   </main>
+
+  <dialog id="dialogo-cc" class="dialogo" aria-label="Asignar centro de costo"></dialog>
+  <dialog id="dialogo-reporte" class="dialogo" aria-label="Reporte de centros de costo"></dialog>
 
   <dialog id="ayuda-ios" class="ayuda">
     <h2>Instalar en el iPhone o iPad</h2>

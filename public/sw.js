@@ -1,13 +1,13 @@
 // Service worker: permite instalar la app y abrirla rápido.
 // Los datos (Supabase) siempre se piden en línea; nunca se guardan en caché.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `polizas-${VERSION}`;
 const ARCHIVOS = [
   '/', '/index.html', '/css/styles.css', '/js/app.js', '/js/calc.js', '/js/pdf-factura.js',
-  '/js/config.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png',
+  '/js/config.js', '/js/centros-costo.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png',
   '/icons/favicon-48.png',
 ];
-const CDN = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+const CDN = ['cdn.jsdelivr.net', 'cdn.sheetjs.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ARCHIVOS)).catch(() => {}));

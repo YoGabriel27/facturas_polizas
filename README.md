@@ -12,6 +12,11 @@ App para revisar las facturas de seguros de caución como quien revisa el resume
   - las pólizas agrupadas por obra (mismo organismo y mismo contrato), con buscador y orden por importe u organismo;
   - al abrir una póliza: su desglose y en qué otras facturas cargadas se cobró, con el total acumulado;
   - el PDF original de la factura.
+- **Centros de costo (CC):**
+  - el botón **↑ Reporte CC** sube el Excel de centros de costo (columnas CC, Descripción y Habilitado). Antes de cargarlo muestra cuántos CC trae, cuántos son nuevos y cuáles pasan a dados de baja o vuelven a estar habilitados;
+  - cada póliza tiene **Asignar CC** / **Cambiar CC**, con sugerencias según el organismo y el contrato, búsqueda por código o descripción, y la opción de asignar el mismo CC a todas las pólizas de la obra;
+  - cada factura muestra el **cruce con centros de costo**: cuánto se paga en obras dadas de baja (CC deshabilitado), en obras vigentes y en pólizas sin CC, con filtro por estado. El listado de facturas avisa cuánto de cada una corresponde a obras dadas de baja;
+  - cada cambio de CC queda registrado con la fecha y el CC anterior.
 - **Organismos:** consulta de aseguradoras, clientes y organismos comitentes.
 - **Importar PDF:** la única forma de cargar facturas. Se eligen uno o varios PDF de la aseguradora (o se arrastran); la app lee cabecera, pólizas, totales, deuda y CAE, controla que todo cuadre y muestra un resumen antes de guardar. La factura y su PDF se guardan en una sola operación.
 - **Instalable:** desde Chrome o Edge aparece el botón **Instalar app**; en iPhone y iPad, el mismo botón explica cómo agregarla a la pantalla de inicio desde Safari.
@@ -28,6 +33,7 @@ public/                  Sitio estático que publica Vercel
   js/app.js              Vistas, login y conexión con Supabase
   js/calc.js             Cálculos, formatos argentinos, CUIT, importe en letras
   js/pdf-factura.js      Lectura del PDF de la aseguradora (pdf.js, por coordenadas)
+  js/centros-costo.js    Lectura del Reporte CC en Excel (SheetJS) y sugerencias de CC
   js/config.js           Se genera en el build (no se sube a GitHub)
 scripts/generate-config.js
 supabase/
@@ -38,6 +44,7 @@ supabase/
     20261009000004_acceso_por_enlace.sql  PDF dentro de la base (y acceso por enlace, ya reemplazado)
     20261009000005_lectura_abierta_solo_alta.sql  Lectura abierta, solo alta de facturas
     20261009000006_sin_carga_manual.sql  Las facturas solo se cargan importando el PDF
+    20261009000007_centros_costo.sql  Centros de costo, Reporte CC y asignación por póliza
   seed.sql               Factura A 0004-00259740 con sus 19 pólizas
 vercel.json
 ```
@@ -69,7 +76,8 @@ Vistas: `v_facturas_resumen` (control de totales) y `v_polizas_vigentes` (últim
    4. `supabase/migrations/20261009000004_acceso_por_enlace.sql`
    5. `supabase/migrations/20261009000005_lectura_abierta_solo_alta.sql`
    6. `supabase/migrations/20261009000006_sin_carga_manual.sql`
-   7. `supabase/seed.sql` (opcional: carga la factura de ejemplo; también se puede importar su PDF desde la app)
+   7. `supabase/migrations/20261009000007_centros_costo.sql`
+   8. `supabase/seed.sql` (opcional: carga la factura de ejemplo; también se puede importar su PDF desde la app)
 
    Si usás la CLI de Supabase, alcanza con `supabase link` y `supabase db push`.
 3. En **Project Settings > API Keys**, copiá la **Project URL** y la clave **anon / publishable**.
@@ -108,8 +116,9 @@ npm run dev             # http://localhost:3000
 ## Seguridad y permisos
 
 - La app no tiene usuarios ni contraseñas: cualquiera que tenga la dirección puede ver todos los datos, incluidos los PDF.
-- Desde la app solo se puede **agregar**: facturas nuevas importadas desde su PDF, y el PDF de una factura que todavía no lo tiene. Una factura ya cargada no se puede volver a cargar, y un PDF archivado no se puede reemplazar.
-- **Nada se modifica ni se elimina desde la app.** Las tablas son de solo lectura para la clave pública de Supabase, así que tampoco se puede hacer saltándose la app. Las únicas escrituras pasan por dos funciones de la base (`importar_factura` y `archivar_pdf`), que solo insertan registros nuevos.
+- Desde la app solo se puede **agregar**: facturas nuevas importadas desde su PDF, y el PDF de una factura que todavía no lo tiene.
+- La única excepción son los **centros de costo**: se puede cargar un Reporte CC (que agrega y actualiza CC, sin borrar ninguno) y asignar o cambiar el CC de cada póliza. Cada cambio de CC queda en `polizas_cc_cambios`. Una factura ya cargada no se puede volver a cargar, y un PDF archivado no se puede reemplazar.
+- **Nada se modifica ni se elimina desde la app.** Las tablas son de solo lectura para la clave pública de Supabase, así que tampoco se puede hacer saltándose la app. Las únicas escrituras pasan por cuatro funciones de la base: `importar_factura` y `archivar_pdf` (solo insertan registros nuevos), `importar_reporte_cc` y `asignar_cc`.
 - Las correcciones (un CUIT, el estado de pago, una factura mal cargada) se hacen desde el **Table Editor** o el **SQL Editor** de Supabase.
 - La página le indica a los buscadores que no la indexen.
 
@@ -145,3 +154,12 @@ Los PDF originales se guardan dentro de la base, en la tabla `factura_pdfs` (has
 La app cumple los requisitos de una aplicación web instalable: `manifest.webmanifest` con nombre e íconos, y un service worker (`sw.js`). Los archivos propios se piden siempre primero a la red, así que cada publicación nueva se ve enseguida. Los datos de Supabase nunca se guardan en caché.
 
 Para cambiar el ícono, reemplazá los archivos de `public/icons/` manteniendo los mismos nombres y tamaños. Si cambiás archivos de la app y querés forzar que los dispositivos instalados descarten la copia guardada, subí el número de `VERSION` en `sw.js`.
+
+## Reporte CC
+
+El Excel debe tener una hoja (preferentemente llamada `CC`) con las columnas **CC**, **Descripción** y **Habilitado**. Habilitado acepta Verdadero/Falso, TRUE/FALSE, Sí/No o 1/0.
+
+- **Habilitado** = obra vigente. **Deshabilitado** = obra dada de baja: las pólizas asignadas a ese CC son candidatas a darse de baja.
+- Los códigos tienen el formato `NN-NNN` (por ejemplo `01-618`). El listado también trae códigos `NN-N`, `NN-NN` y `NN-NNNNN` (por ejemplo `10-82`), que se aceptan igual.
+- La fecha del reporte se toma del nombre del archivo si la incluye (`BASE_de_CC_24-09-2026.xlsx` → 24/09/2026).
+- Cargar un reporte nuevo agrega los CC que no existían y actualiza descripción y estado de los existentes. Los CC que no vienen en el reporte se conservan, para no perder asignaciones.

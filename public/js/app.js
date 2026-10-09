@@ -144,8 +144,8 @@ async function cargarCentros(forzar = false) {
   return centros;
 }
 
-const estadoCC = (cc) => (!cc ? 'sin' : cc.habilitado ? 'vigente' : 'baja');
-const TEXTO_ESTADO = { vigente: 'Obra vigente', baja: 'Obra dada de baja', sin: 'Sin CC asignado' };
+const estadoCC = (cc) => (!cc ? 'sin' : cc.habilitado ? 'activa' : 'baja');
+const TEXTO_ESTADO = { activa: 'Obra activa', baja: 'Obra dada de baja', sin: 'Sin CC asignado' };
 const chipCC = (cc) => (cc
   ? `<span class="cc cc-${estadoCC(cc)}"><span class="cc-codigo">CC ${esc(cc.codigo)}</span> ${esc(cc.descripcion)}<span class="cc-estado">${TEXTO_ESTADO[estadoCC(cc)]}</span></span>`
   : `<span class="cc cc-sin"><span class="cc-estado">${TEXTO_ESTADO.sin}</span></span>`);
@@ -241,7 +241,7 @@ async function vistaDetalle(id) {
   const obraDe = (it) => obras[indiceObras.get(claveObra(it))];
 
   // Cruce con centros de costo
-  const grupos = { baja: [], vigente: [], sin: [] };
+  const grupos = { baja: [], activa: [], sin: [] };
   items.forEach((it) => grupos[estadoCC(it.poliza.cc)].push(it));
 
   // Por tipo de garantía
@@ -385,7 +385,7 @@ async function vistaDetalle(id) {
       : aviso('advertencia', 'Todavía no se cargó ningún Reporte CC. Usá el botón <strong>↑ Reporte CC</strong> de la barra superior para subir el Excel de centros de costo.')}
     <div class="cruce-cc">
       ${tarjetaCruce('baja', 'Obras dadas de baja')}
-      ${tarjetaCruce('vigente', 'Obras vigentes')}
+      ${tarjetaCruce('activa', 'Obras activas')}
       ${tarjetaCruce('sin', 'Sin CC asignado')}
     </div>
 
@@ -405,7 +405,7 @@ async function vistaDetalle(id) {
         <label>Estado según CC
           <select id="estado-cc">
             <option value="todas">Todas</option><option value="baja">Obras dadas de baja</option>
-            <option value="vigente">Obras vigentes</option><option value="sin">Sin CC asignado</option>
+            <option value="activa">Obras activas</option><option value="sin">Sin CC asignado</option>
           </select>
         </label>
         <label>Ordenar
@@ -471,7 +471,7 @@ function abrirAsignarCC(it, otrasDeLaObra, alGuardar) {
       <input type="radio" name="cc" value="${esc(cc.codigo)}" ${cc.codigo === elegido ? 'checked' : ''}>
       <span class="opcion-cc-codigo">${esc(cc.codigo)}</span>
       <span class="opcion-cc-desc">${esc(cc.descripcion)}</span>
-      <span class="cc-estado cc-${estadoCC(cc)}">${cc.habilitado ? 'Vigente' : 'Dada de baja'}</span>
+      <span class="cc-estado cc-${estadoCC(cc)}">${cc.habilitado ? 'Activa' : 'Dada de baja'}</span>
     </label>`;
 
   dialogo.innerHTML = `
@@ -567,7 +567,7 @@ async function abrirReporteCC() {
       const listar = (arr) => `<ul>${arr.slice(0, 8).map((c) => `<li>${esc(c.codigo)} ${esc(c.descripcion)}</li>`).join('')}${arr.length > 8 ? `<li>y ${arr.length - 8} más</li>` : ''}</ul>`;
       vista.innerHTML = `
         ${aviso('ok', `<strong>${esc(archivo.name)}</strong>${fecha ? `, del ${fmtFecha(fecha)}` : ''}: ${lectura.filas.length} centros de costo,
-          ${habil} habilitados (obras vigentes) y ${lectura.filas.length - habil} deshabilitados (obras dadas de baja).
+          ${habil} habilitados (obras activas) y ${lectura.filas.length - habil} deshabilitados (obras dadas de baja).
           ${centros.size ? `Respecto del listado actual: ${plural(nuevos.length, 'CC nuevo', 'CC nuevos')}.` : ''}`)}
         ${aBaja.length ? aviso('advertencia', `Pasan a <strong>dados de baja</strong> ${plural(aBaja.length, 'CC', 'CC')}:${listar(aBaja)}`) : ''}
         ${aVigente.length ? aviso('ok', `Vuelven a estar <strong>habilitados</strong> ${plural(aVigente.length, 'CC', 'CC')}:${listar(aVigente)}`) : ''}

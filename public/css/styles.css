@@ -19,9 +19,9 @@
   --tarjeta-texto: #f3f6fb;
 
   /* Paleta de estados de obra (centros de costo) */
-  --cc-baja: #f2dcdb;
-  --cc-vigente: #ffffcc;
-  --cc-activa: #ccffcc;
+  --cc-baja: #f2dcdb;    /* Habilitado = Falso en el Reporte CC */
+  --cc-activa: #ccffcc;  /* Habilitado = Verdadero */
+  --cc-sin: #ffffcc;     /* Sin CC asignado */
 
   --fuente: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   --fuente-angosta: "IBM Plex Sans Condensed", "Arial Narrow", "IBM Plex Sans", sans-serif;
@@ -249,14 +249,14 @@ td.col-texto { min-width: 20rem; }
 }
 .cc-codigo { font-weight: 600; }
 .cc-estado { font-weight: 600; font-size: .78rem; }
-.cc-vigente { background: var(--cc-vigente); border-color: #e6e08a; }
-.cc-vigente .cc-estado, .cc-estado.cc-vigente { color: #5f5200; }
-.cc-baja { background: var(--cc-baja); border-color: #dfb4b2; }
-.cc-baja .cc-estado, .cc-estado.cc-baja { color: #9e2a24; }
 .cc-activa { background: var(--cc-activa); border-color: #9fd99f; }
 .cc-activa .cc-estado, .cc-estado.cc-activa { color: #1f5f1f; }
-.cc-estado.cc-vigente, .cc-estado.cc-baja, .cc-estado.cc-activa { padding: .1rem .45rem; border-radius: 4px; border: 1px solid transparent; }
-.cc-sin .cc-estado, .cc-mixto .cc-estado { color: var(--tenue); font-weight: 500; }
+.cc-baja { background: var(--cc-baja); border-color: #dfb4b2; }
+.cc-baja .cc-estado, .cc-estado.cc-baja { color: #9e2a24; }
+.cc-sin { background: var(--cc-sin); border-color: #e6e08a; }
+.cc-estado.cc-activa, .cc-estado.cc-baja { padding: .1rem .45rem; border-radius: 4px; border: 1px solid transparent; }
+.cc-sin .cc-estado { color: #5f5200; font-weight: 500; }
+.cc-mixto .cc-estado { color: var(--tenue); font-weight: 500; }
 
 .cruce-cc { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
 @media (max-width: 640px) { .cruce-cc { grid-template-columns: 1fr; } }
@@ -267,8 +267,8 @@ td.col-texto { min-width: 20rem; }
 }
 .cruce-cc button[aria-pressed="true"] { outline: 2px solid var(--acento); outline-offset: 1px; }
 .cruce-baja { border-left-color: var(--rojo) !important; }
-.cruce-vigente { border-left-color: var(--ok) !important; }
-.cruce-sin { border-left-color: var(--tenue) !important; }
+.cruce-activa { border-left-color: #4caf50 !important; }
+.cruce-sin { border-left-color: #d9cf3a !important; }
 .cruce-titulo { font-size: .85rem; color: var(--tenue); }
 .cruce-monto { font: 600 1.45rem var(--fuente-angosta); color: var(--tinta); }
 .cruce-baja .cruce-monto { color: var(--rojo); }

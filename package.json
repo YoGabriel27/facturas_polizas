@@ -1,0 +1,12 @@
+{
+  "name": "facturas-seguros",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Registro y control de facturas de seguros de caución (HTML + Supabase + Vercel)",
+  "scripts": {
+    "config": "node scripts/generate-config.js",
+    "build": "node scripts/generate-config.js",
+    "dev": "node scripts/generate-config.js && npx --yes serve@14.2.4 public -l 3000"
+  },
+  "engines": { "node": ">=18" }
+}

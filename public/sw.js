@@ -1,6 +1,6 @@
 // Service worker: permite instalar la app y abrirla rápido.
 // Los datos (Supabase) siempre se piden en línea; nunca se guardan en caché.
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = `polizas-${VERSION}`;
 const ARCHIVOS = [
   '/', '/index.html', '/css/styles.css', '/js/app.js', '/js/calc.js', '/js/pdf-factura.js',

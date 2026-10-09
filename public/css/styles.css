@@ -18,6 +18,11 @@
   --tarjeta: #12366e;
   --tarjeta-texto: #f3f6fb;
 
+  /* Paleta de estados de obra (centros de costo) */
+  --cc-baja: #f2dcdb;
+  --cc-vigente: #ffffcc;
+  --cc-activa: #ccffcc;
+
   --fuente: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   --fuente-angosta: "IBM Plex Sans Condensed", "Arial Narrow", "IBM Plex Sans", sans-serif;
   --radio: 8px;
@@ -244,9 +249,13 @@ td.col-texto { min-width: 20rem; }
 }
 .cc-codigo { font-weight: 600; }
 .cc-estado { font-weight: 600; font-size: .78rem; }
-.cc-vigente .cc-estado, .cc-estado.cc-vigente { color: var(--ok); }
-.cc-baja { background: var(--rojo-suave); border-color: color-mix(in srgb, var(--rojo) 35%, transparent); }
-.cc-baja .cc-estado, .cc-estado.cc-baja { color: var(--rojo); }
+.cc-vigente { background: var(--cc-vigente); border-color: #e6e08a; }
+.cc-vigente .cc-estado, .cc-estado.cc-vigente { color: #5f5200; }
+.cc-baja { background: var(--cc-baja); border-color: #dfb4b2; }
+.cc-baja .cc-estado, .cc-estado.cc-baja { color: #9e2a24; }
+.cc-activa { background: var(--cc-activa); border-color: #9fd99f; }
+.cc-activa .cc-estado, .cc-estado.cc-activa { color: #1f5f1f; }
+.cc-estado.cc-vigente, .cc-estado.cc-baja, .cc-estado.cc-activa { padding: .1rem .45rem; border-radius: 4px; border: 1px solid transparent; }
 .cc-sin .cc-estado, .cc-mixto .cc-estado { color: var(--tenue); font-weight: 500; }
 
 .cruce-cc { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }

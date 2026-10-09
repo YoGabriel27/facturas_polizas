@@ -15,7 +15,7 @@ App para revisar las facturas de seguros de caución como quien revisa el resume
 - **Centros de costo (CC):**
   - el botón **↑ Reporte CC** sube el Excel de centros de costo (columnas CC, Descripción y Habilitado). Antes de cargarlo muestra cuántos CC trae, cuántos son nuevos y cuáles pasan a dados de baja o vuelven a estar habilitados;
   - cada póliza tiene **Asignar CC** / **Cambiar CC**, con sugerencias según el organismo y el contrato, búsqueda por código o descripción, y la opción de asignar el mismo CC a todas las pólizas de la obra;
-  - cada factura muestra el **cruce con centros de costo**: cuánto se paga en obras dadas de baja (CC deshabilitado), en obras vigentes y en pólizas sin CC, con filtro por estado. El listado de facturas avisa cuánto de cada una corresponde a obras dadas de baja;
+  - cada factura muestra el **cruce con centros de costo**: cuánto se paga en obras dadas de baja (CC deshabilitado), en obras activas y en pólizas sin CC, con filtro por estado. El listado de facturas avisa cuánto de cada una corresponde a obras dadas de baja;
   - cada cambio de CC queda registrado con la fecha y el CC anterior.
 - **Organismos:** consulta de aseguradoras, clientes y organismos comitentes.
 - **Importar PDF:** la única forma de cargar facturas. Se eligen uno o varios PDF de la aseguradora (o se arrastran); la app lee cabecera, pólizas, totales, deuda y CAE, controla que todo cuadre y muestra un resumen antes de guardar. La factura y su PDF se guardan en una sola operación.
@@ -159,7 +159,7 @@ Para cambiar el ícono, reemplazá los archivos de `public/icons/` manteniendo l
 
 El Excel debe tener una hoja (preferentemente llamada `CC`) con las columnas **CC**, **Descripción** y **Habilitado**. Habilitado acepta Verdadero/Falso, TRUE/FALSE, Sí/No o 1/0.
 
-- **Habilitado** = obra vigente. **Deshabilitado** = obra dada de baja: las pólizas asignadas a ese CC son candidatas a darse de baja.
+- **Habilitado** = obra activa (verde). **Sin CC asignado**: amarillo. **Deshabilitado** = obra dada de baja (rosa): las pólizas asignadas a ese CC son candidatas a darse de baja.
 - Los códigos tienen el formato `NN-NNN` (por ejemplo `01-618`). El listado también trae códigos `NN-N`, `NN-NN` y `NN-NNNNN` (por ejemplo `10-82`), que se aceptan igual.
 - La fecha del reporte se toma del nombre del archivo si la incluye (`BASE_de_CC_24-09-2026.xlsx` → 24/09/2026).
 - Cargar un reporte nuevo agrega los CC que no existían y actualiza descripción y estado de los existentes. Los CC que no vienen en el reporte se conservan, para no perder asignaciones.

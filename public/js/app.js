@@ -1,6 +1,6 @@
 import {
-  money, round2, parseAR, fmtFecha, comprobante, numeroALetras,
-  premioDeItem, sugerirImportes, sumar, validarItem, TOLERANCIA,
+  money, round2, fmtFecha, comprobante,
+  sumar, validarItem, TOLERANCIA,
 } from './calc.js';
 import { leerArchivoPdf, armarPayload } from './pdf-factura.js';
 
@@ -49,21 +49,52 @@ function iniciar() {
 
 async function router() {
   const [ruta = 'facturas', id] = location.hash.replace(/^#\/?/, '').split('/');
+  const seccion = ruta === 'factura' ? 'facturas' : ruta;
   nav.querySelectorAll('a').forEach((a) => {
-    if (a.dataset.ruta === ruta) a.setAttribute('aria-current', 'page');
+    if (a.dataset.ruta === seccion) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
   app.innerHTML = '<p class="cargando">Cargando…</p>';
   try {
     if (ruta === 'factura' && id) await vistaDetalle(id);
     else if (ruta === 'importar') await vistaImportar();
-    else if (ruta === 'nueva') await vistaNueva();
-    else if (ruta === 'vencimientos') await vistaVencimientos();
     else if (ruta === 'entidades') await vistaEntidades();
     else await vistaFacturas();
+    window.scrollTo(0, 0);
   } catch (err) {
     app.innerHTML = aviso('error', esc(err.message));
   }
+}
+
+// ---------- Instalación en escritorio y celular ----------
+const botonInstalar = document.getElementById('instalar');
+const ayudaIos = document.getElementById('ayuda-ios');
+const enModoApp = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+const esIos = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let eventoInstalacion = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  eventoInstalacion = e;
+  botonInstalar.hidden = false;
+});
+window.addEventListener('appinstalled', () => { botonInstalar.hidden = true; eventoInstalacion = null; });
+if (esIos && !enModoApp) botonInstalar.hidden = false;
+
+botonInstalar.addEventListener('click', async () => {
+  if (eventoInstalacion) {
+    eventoInstalacion.prompt();
+    await eventoInstalacion.userChoice;
+    eventoInstalacion = null;
+    botonInstalar.hidden = true;
+  } else if (esIos) {
+    ayudaIos.showModal();
+  }
+});
+document.getElementById('cerrar-ayuda').addEventListener('click', () => ayudaIos.close());
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }
 
 iniciar();
@@ -82,12 +113,27 @@ async function archivarPdf(facturaId, archivo) {
   await q(sb.rpc('archivar_pdf', { p_factura_id: facturaId, p_nombre: archivo.name, p_base64: await aBase64(archivo) }));
 }
 
+
+// ---------- Formatos de fecha legibles ----------
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+  'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const partesFecha = (iso) => String(iso).slice(0, 10).split('-').map(Number);
+const fechaLarga = (iso) => { const [a, m, d] = partesFecha(iso); return `${d} de ${MESES[m - 1]} de ${a}`; };
+const mesAnio = (iso) => { const [a, m] = partesFecha(iso); return `${MESES[m - 1][0].toUpperCase()}${MESES[m - 1].slice(1)} ${a}`; };
+const fechaCorta = (iso) => { const [, m, d] = partesFecha(iso); return `${d}/${m}`; };
+const periodo = (desde, hasta) => `del ${fechaCorta(desde)} al ${fmtFecha(hasta)}`;
+const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+
+// Agrupa las pólizas por obra: mismo organismo y mismo contrato (objeto)
+const claveObra = (it) => `${it.poliza.asegurado.razon_social}|${(it.poliza.objeto || '').toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+
 // ---------- Listado de facturas ----------
 async function vistaFacturas() {
-  const filas = await q(sb.from('v_facturas_resumen').select('*').order('fecha', { ascending: false }));
-  const pendiente = filas.filter((f) => f.estado === 'pendiente').reduce((a, f) => a + Number(f.premio_total), 0);
+  const facturas = await q(sb.from('facturas')
+    .select('id, tipo, punto_venta, numero, fecha, premio_total, emisor:entidades!facturas_emisor_id_fkey(razon_social), cliente:entidades!facturas_cliente_id_fkey(razon_social), items:factura_items(count)')
+    .order('fecha', { ascending: false }));
 
-  if (!filas.length) {
+  if (!facturas.length) {
     app.innerHTML = `
       <h1>Facturas</h1>
       <div class="vacio"><p>Todavía no hay facturas cargadas.</p><a class="boton" href="#/importar">Importar PDF</a></div>`;
@@ -98,46 +144,34 @@ async function vistaFacturas() {
     <div class="encabezado">
       <div>
         <h1>Facturas</h1>
-        <p class="bajada">${filas.length} comprobantes. Pendiente de pago: <strong>$ ${money(pendiente)}</strong></p>
+        <p class="bajada">Abrí una factura para revisar, obra por obra, qué pólizas se están cobrando.</p>
       </div>
-      <a class="boton" href="#/importar">Importar PDF</a>
     </div>
-    <div class="tabla-scroll">
-      <table>
-        <thead><tr>
-          <th>Comprobante</th><th>Fecha</th><th>Cliente</th><th class="num">Pólizas</th>
-          <th class="num">Premio total</th><th>Estado</th><th>Control</th>
-        </tr></thead>
-        <tbody>
-          ${filas.map((f) => {
-            const cuadra = Math.abs(Number(f.diferencia)) <= TOLERANCIA;
-            return `<tr class="fila-enlace" data-id="${f.id}">
-              <td><a href="#/factura/${f.id}">${esc(comprobante(f))}</a></td>
-              <td>${fmtFecha(f.fecha)}</td>
-              <td>${esc(f.cliente)}</td>
-              <td class="num">${f.cantidad_items}</td>
-              <td class="num">$ ${money(f.premio_total)}</td>
-              <td><span class="chip ${f.estado}">${esc(f.estado)}</span></td>
-              <td>${cuadra ? '<span class="chip ok">Cuadra</span>'
-                           : `<span class="chip error">Difiere $ ${money(f.diferencia)}</span>`}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>`;
-  app.querySelectorAll('tr.fila-enlace').forEach((tr) =>
-    tr.addEventListener('click', (e) => { if (e.target.tagName !== 'A') location.hash = `#/factura/${tr.dataset.id}`; }));
+    <ul class="lista-facturas">
+      ${facturas.map((f) => {
+        const cantidad = f.items?.[0]?.count ?? 0;
+        return `<li>
+          <a class="fila-factura" href="#/factura/${f.id}">
+            <span class="fila-factura-mes">${mesAnio(f.fecha)}</span>
+            <span class="fila-factura-detalle">
+              ${esc(f.emisor.razon_social)}
+              <span class="secundario-texto">Factura ${esc(comprobante(f))} del ${fmtFecha(f.fecha)}, ${plural(cantidad, 'póliza', 'pólizas')}</span>
+            </span>
+            <span class="fila-factura-total">$ ${money(f.premio_total)}</span>
+          </a>
+        </li>`;
+      }).join('')}
+    </ul>`;
 }
 
-// ---------- Detalle de factura ----------
+// ---------- Factura como resumen ----------
 async function vistaDetalle(id) {
   const f = await q(sb.from('facturas').select(`
     *,
-    emisor:entidades!facturas_emisor_id_fkey(*),
-    cliente:entidades!facturas_cliente_id_fkey(*),
-    productor:productores(nombre),
+    emisor:entidades!facturas_emisor_id_fkey(razon_social),
+    cliente:entidades!facturas_cliente_id_fkey(razon_social),
     deuda:deuda_snapshots(*),
-    items:factura_items(*, poliza:polizas(numero, objeto,
+    items:factura_items(*, poliza:polizas(id, numero, objeto,
       asegurado:entidades!polizas_asegurado_id_fkey(razon_social),
       riesgo:riesgos(ramo, subtipo)))
   `).eq('id', id).single());
@@ -145,120 +179,159 @@ async function vistaDetalle(id) {
   const items = [...f.items].sort((a, b) => a.orden - b.orden);
   const deuda = Array.isArray(f.deuda) ? f.deuda[0] : f.deuda;
 
-  // Controles
-  const problemas = [];
-  items.forEach((it) => validarItem(it).forEach((p) =>
-    problemas.push({ ...p, texto: `Póliza ${it.poliza.numero}: ${p.texto}` })));
-  const premioItems = sumar(items, 'premio');
-  const esperado = round2(premioItems + Number(f.otros_gastos));
-  if (Math.abs(esperado - Number(f.premio_total)) > TOLERANCIA) {
-    problemas.push({ nivel: 'error', texto: `El premio total impreso ($ ${money(f.premio_total)}) no coincide con la suma de las pólizas ($ ${money(esperado)}).` });
-  }
-  if (deuda && Math.abs(Number(deuda.vencido) + Number(deuda.a_vencer) - Number(deuda.total)) > 1) {
-    problemas.push({ nivel: 'aviso', texto: 'En la deuda informada, vencido + a vencer no da el total (puede ser por redondeo de la aseguradora).' });
-  }
-  const errores = problemas.filter((p) => p.nivel === 'error');
-  const resumenControl = problemas.length
-    ? aviso(errores.length ? 'error' : 'advertencia',
-        `${errores.length ? 'La factura tiene diferencias.' : 'La factura cuadra, con observaciones.'}
-         <ul>${problemas.map((p) => `<li>${esc(p.texto)}</li>`).join('')}</ul>`)
-    : aviso('ok', `Las ${items.length} pólizas suman exactamente el premio total.`);
+  // Historial de cada póliza en todas las facturas cargadas
+  const historial = await q(sb.from('factura_items')
+    .select('poliza_id, endoso, premio, vigencia_desde, vigencia_hasta, factura:facturas(id, fecha, tipo, punto_venta, numero)')
+    .in('poliza_id', items.map((it) => it.poliza.id)));
+  const historialDe = (polizaId) => historial
+    .filter((h) => h.poliza_id === polizaId)
+    .sort((a, b) => String(b.factura.fecha).localeCompare(String(a.factura.fecha)) || b.endoso - a.endoso);
 
-  const parte = (rol, e, extra = '') => `
-    <div class="parte">
-      <div class="rol">${rol}</div>
-      <h3>${esc(e.razon_social)}</h3>
-      <p>${esc([e.domicilio, e.localidad, e.codigo_postal && `CP ${e.codigo_postal}`, e.provincia].filter(Boolean).join(', '))}</p>
-      <p>CUIT ${esc(e.cuit || 'sin cargar')}${e.condicion_iva ? `, ${esc(e.condicion_iva)}` : ''}</p>
-      ${extra}
-    </div>`;
+  // Obras
+  const obras = [];
+  const indice = new Map();
+  for (const it of items) {
+    const clave = claveObra(it);
+    if (!indice.has(clave)) {
+      indice.set(clave, obras.length);
+      obras.push({ organismo: it.poliza.asegurado.razon_social, objeto: it.poliza.objeto, items: [], total: 0 });
+    }
+    const obra = obras[indice.get(clave)];
+    obra.items.push(it);
+    obra.total = round2(obra.total + Number(it.premio));
+  }
+
+  // Por tipo de garantía
+  const tipos = new Map();
+  for (const it of items) {
+    const nombre = `${it.poliza.riesgo.subtipo} (${it.poliza.riesgo.ramo})`;
+    const t = tipos.get(nombre) || { nombre, cantidad: 0, total: 0 };
+    t.cantidad += 1;
+    t.total = round2(t.total + Number(it.premio));
+    tipos.set(nombre, t);
+  }
+  const listaTipos = [...tipos.values()].sort((a, b) => b.total - a.total);
+  const maxTipo = Math.max(...listaTipos.map((t) => t.total));
+
+  // Control de totales: solo se muestra si algo no cuadra
+  const sumaItems = sumar(items, 'premio');
+  const cuadra = Math.abs(round2(sumaItems + Number(f.otros_gastos)) - Number(f.premio_total)) <= TOLERANCIA;
+  const conDiferencias = items.filter((it) => validarItem(it).some((p) => p.nivel === 'error'));
+
+  const desde = items.map((it) => it.vigencia_desde).sort()[0];
+  const hasta = items.map((it) => it.vigencia_hasta).sort().slice(-1)[0];
+
+  const cargo = (it) => {
+    const hist = historialDe(it.poliza.id);
+    const totalHist = round2(hist.reduce((a, h) => a + Number(h.premio), 0));
+    return `<li>
+      <details class="cargo">
+        <summary>
+          <span class="cargo-descripcion">
+            <strong>${esc(it.poliza.riesgo.subtipo)}</strong>
+            <span class="secundario-texto">Póliza ${it.poliza.numero}, endoso ${it.endoso}. Cobertura ${periodo(it.vigencia_desde, it.vigencia_hasta)}</span>
+          </span>
+          <span class="cargo-monto">$ ${money(it.premio)}</span>
+        </summary>
+        <div class="cargo-detalle">
+          <dl class="desglose">
+            <dt>Monto asegurado</dt><dd>$ ${money(it.suma_asegurada)}</dd>
+            <dt>Prima</dt><dd>$ ${money(it.prima)}</dd>
+            <dt>Impuestos</dt><dd>$ ${money(it.impuestos)}</dd>
+            <dt>IVA</dt><dd>$ ${money(Number(it.iva) + Number(it.iva_rg))}</dd>
+            <dt class="fuerte">Costo de este período</dt><dd class="fuerte">$ ${money(it.premio)}</dd>
+          </dl>
+          <div>
+            <h4>Cobrada en ${plural(hist.length, 'factura cargada', 'facturas cargadas')}, por $ ${money(totalHist)}</h4>
+            <ul class="historial">
+              ${hist.map((h) => `<li class="${h.factura.id === f.id ? 'actual' : ''}">
+                <a href="#/factura/${h.factura.id}">Factura del ${fmtFecha(h.factura.fecha)}</a>
+                <span class="secundario-texto">Endoso ${h.endoso}, ${periodo(h.vigencia_desde, h.vigencia_hasta)}</span>
+                <span class="historial-monto">$ ${money(h.premio)}</span>
+              </li>`).join('')}
+            </ul>
+          </div>
+        </div>
+      </details>
+    </li>`;
+  };
+
+  const pintarObras = (orden, texto) => {
+    const buscado = texto.trim().toUpperCase();
+    const lista = obras
+      .map((o) => {
+        if (!buscado) return o;
+        const enObra = `${o.organismo} ${o.objeto || ''}`.toUpperCase().includes(buscado);
+        const visibles = enObra ? o.items : o.items.filter((it) => `${it.poliza.numero} ${it.poliza.riesgo.subtipo}`.toUpperCase().includes(buscado));
+        return visibles.length ? { ...o, items: visibles, total: sumar(visibles, 'premio') } : null;
+      })
+      .filter(Boolean)
+      .sort(orden === 'importe' ? (a, b) => b.total - a.total : (a, b) => a.organismo.localeCompare(b.organismo, 'es'));
+    document.getElementById('obras').innerHTML = lista.length
+      ? lista.map((o) => `
+        <article class="obra">
+          <header class="obra-cabecera">
+            <div>
+              <h3>${esc(o.organismo)}</h3>
+              <p class="secundario-texto">${esc(o.objeto || 'Sin contrato informado')}</p>
+            </div>
+            <p class="obra-total">$ ${money(o.total)}<span class="secundario-texto">${plural(o.items.length, 'póliza', 'pólizas')}</span></p>
+          </header>
+          <ul class="cargos">${o.items.map(cargo).join('')}</ul>
+        </article>`).join('')
+      : '<div class="vacio"><p>Ninguna póliza coincide con la búsqueda.</p></div>';
+  };
 
   app.innerHTML = `
-    <a href="#/facturas">Volver a facturas</a>
-    <p class="comprobante-numero">Factura ${esc(comprobante(f))}</p>
-    <div class="comprobante-meta">
-      <span>Emitida el ${fmtFecha(f.fecha)}</span>
-      <span class="chip ${f.estado}">${esc(f.estado)}${f.fecha_pago ? ` el ${fmtFecha(f.fecha_pago)}` : ''}</span>
-      ${f.cae ? `<span>CAE ${esc(f.cae)}, vence ${fmtFecha(f.cae_vencimiento)}</span>` : ''}
-      ${f.pdf_path ? '<button type="button" class="boton secundario" id="ver-pdf">Ver PDF original</button>' : ''}
-    </div>
+    <a href="#/facturas" class="volver">Todas las facturas</a>
 
-    ${resumenControl}
-
-    <div class="partes">
-      ${parte('Emisor', f.emisor, f.emisor.ingresos_brutos ? `<p>IIBB ${esc(f.emisor.ingresos_brutos)}</p>` : '')}
-      ${parte('Cliente', f.cliente, `${f.cliente.codigo_cliente ? `<p>Código de cliente ${esc(f.cliente.codigo_cliente)}</p>` : ''}
-                                     ${f.productor ? `<p>Productor: ${esc(f.productor.nombre)}</p>` : ''}`)}
-    </div>
-
-    <h2>Pólizas facturadas</h2>
-    <div class="tabla-scroll">
-      <table>
-        <thead><tr>
-          <th>Póliza / endoso</th><th>Vigencia</th><th>Asegurado y riesgo</th>
-          <th class="num">Suma asegurada</th><th class="num">Prima</th><th class="num">Impuestos</th>
-          <th class="num">IVA</th><th class="num">Premio</th><th>Control</th>
-        </tr></thead>
-        <tbody>
-          ${items.map((it) => {
-            const obs = validarItem(it);
-            return `<tr>
-              <td>${it.poliza.numero}<span class="secundario-texto">Endoso ${it.endoso}</span></td>
-              <td>${fmtFecha(it.vigencia_desde)}<span class="secundario-texto">al ${fmtFecha(it.vigencia_hasta)}</span></td>
-              <td class="col-texto">${esc(it.poliza.asegurado.razon_social)}
-                <span class="secundario-texto">${esc(it.poliza.riesgo.ramo)}, ${esc(it.poliza.riesgo.subtipo)}</span>
-                <span class="secundario-texto">${esc(it.poliza.objeto || '')}</span></td>
-              <td class="num">${money(it.suma_asegurada)}</td>
-              <td class="num">${money(it.prima)}</td>
-              <td class="num">${money(it.impuestos)}</td>
-              <td class="num">${money(it.iva)}</td>
-              <td class="num"><strong>${money(it.premio)}</strong></td>
-              <td>${obs.length
-                ? `<span class="chip ${obs.some((o) => o.nivel === 'error') ? 'error' : 'pendiente'}" title="${esc(obs.map((o) => o.texto).join(' '))}">Revisar</span>`
-                : '<span class="chip ok">Cuadra</span>'}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-        <tfoot><tr>
-          <td colspan="3">Totales</td>
-          <td class="num">${money(sumar(items, 'suma_asegurada'))}</td>
-          <td class="num">${money(sumar(items, 'prima'))}</td>
-          <td class="num">${money(sumar(items, 'impuestos'))}</td>
-          <td class="num">${money(sumar(items, 'iva'))}</td>
-          <td class="num">${money(premioItems)}</td>
-          <td></td>
-        </tr></tfoot>
-      </table>
-    </div>
-
-    <section class="cheque" aria-label="Totales de la factura">
-      <div>
-        <h3>Premio total</h3>
-        <p class="monto-total">$ ${money(f.premio_total)}</p>
-        <p class="letras">${esc(numeroALetras(f.premio_total))}</p>
+    <section class="resumen" aria-labelledby="total-factura">
+      <div class="resumen-principal">
+        <p class="resumen-emisor">${esc(f.emisor.razon_social)}</p>
+        <p class="resumen-total" id="total-factura">$ ${money(f.premio_total)}</p>
+        <p class="resumen-texto">Total de la factura del ${fechaLarga(f.fecha)} a ${esc(f.cliente.razon_social)}.
+          ${plural(items.length, 'póliza', 'pólizas')} en ${plural(obras.length, 'obra', 'obras')}, con cobertura ${periodo(desde, hasta)}.</p>
       </div>
-      <dl>
-        <dt>Prima</dt><dd>${money(f.prima)}</dd>
-        <dt>Gastos notariales</dt><dd>${money(f.gastos_notariales)}</dd>
-        <dt>Subtotal</dt><dd>${money(f.subtotal)}</dd>
-        <dt>Impuestos</dt><dd>${money(f.impuestos)}</dd>
-        <dt>Percepción IIBB</dt><dd>${money(f.perc_iibb)}</dd>
-        <dt>IVA inscripto 21 %</dt><dd>${money(f.iva)}</dd>
-        <dt>IVA RG 3337</dt><dd>${money(f.iva_rg)}</dd>
-        <dt>Otros gastos</dt><dd>${money(f.otros_gastos)}</dd>
-        <dt class="fuerte">Premio total</dt><dd class="fuerte">${money(f.premio_total)}</dd>
+      <dl class="resumen-datos">
+        <div><dt>Comprobante</dt><dd>${esc(comprobante(f))}</dd></div>
+        ${f.cae ? `<div><dt>CAE</dt><dd>${esc(f.cae)}</dd></div>` : ''}
+        ${deuda ? `<div><dt>Deuda vencida con la aseguradora</dt><dd>$ ${money(deuda.vencido)}</dd></div>
+                   <div><dt>Deuda total al emitir la factura</dt><dd>$ ${money(deuda.total)}</dd></div>` : ''}
       </dl>
+      ${f.pdf_path ? '<button type="button" class="boton claro" id="ver-pdf">Ver factura original</button>' : ''}
     </section>
+    <div id="msg-estado"></div>
 
-    ${deuda ? `
-      <h2>Deuda informada al emitir la factura</h2>
-      <div class="deuda">
-        <div><span>Vencido</span><strong>$ ${money(deuda.vencido)}</strong></div>
-        <div><span>A vencer</span><strong>$ ${money(deuda.a_vencer)}</strong></div>
-        <div><span>Total</span><strong>$ ${money(deuda.total)}</strong></div>
-      </div>` : ''}
+    ${!cuadra || conDiferencias.length ? aviso('advertencia',
+      `Revisá esta factura con el PDF original: ${!cuadra ? `las pólizas suman $ ${money(sumaItems)} y el total impreso es $ ${money(f.premio_total)}.` : ''}
+       ${conDiferencias.length ? `Hay ${plural(conDiferencias.length, 'póliza', 'pólizas')} cuyo importe no coincide con su desglose.` : ''}`) : ''}
 
-    <div id="msg-estado"></div>`;
+    <h2>En qué se va el total</h2>
+    <ul class="tipos">
+      ${listaTipos.map((t) => `<li>
+        <span class="tipo-nombre">${esc(t.nombre)}<span class="secundario-texto">${plural(t.cantidad, 'póliza', 'pólizas')}</span></span>
+        <span class="tipo-barra" aria-hidden="true"><span style="width:${Math.max(2, (t.total / maxTipo) * 100)}%"></span></span>
+        <span class="tipo-monto">$ ${money(t.total)}</span>
+      </li>`).join('')}
+    </ul>
+
+    <div class="encabezado encabezado-obras">
+      <h2>Pólizas por obra</h2>
+      <div class="filtros">
+        <label class="buscar">Buscar <input type="search" id="buscar" placeholder="Organismo, contrato o número de póliza"></label>
+        <label>Ordenar
+          <select id="orden"><option value="importe">Mayor importe</option><option value="organismo">Organismo (A-Z)</option></select>
+        </label>
+      </div>
+    </div>
+    <div id="obras"></div>`;
+
+  const buscar = document.getElementById('buscar');
+  const orden = document.getElementById('orden');
+  const repintar = () => pintarObras(orden.value, buscar.value);
+  buscar.addEventListener('input', repintar);
+  orden.addEventListener('change', repintar);
+  repintar();
 
   document.getElementById('ver-pdf')?.addEventListener('click', async () => {
     const ventana = window.open('', '_blank');
@@ -272,48 +345,6 @@ async function vistaDetalle(id) {
       document.getElementById('msg-estado').innerHTML = aviso('error', 'No se pudo abrir el PDF original.');
     }
   });
-
-}
-
-// ---------- Vencimientos ----------
-async function vistaVencimientos() {
-  const filas = await q(sb.from('v_polizas_vigentes').select('*').order('vigencia_hasta'));
-  const pintar = (soloProximas) => {
-    const lista = soloProximas ? filas.filter((p) => p.dias_restantes <= 30) : filas;
-    document.getElementById('tabla-venc').innerHTML = lista.length ? `
-      <div class="tabla-scroll"><table>
-        <thead><tr><th>Póliza</th><th>Asegurado</th><th>Riesgo</th><th>Último endoso</th>
-          <th>Vigente hasta</th><th class="num">Suma asegurada</th><th class="num">Último premio</th></tr></thead>
-        <tbody>${lista.map((p) => {
-          const d = p.dias_restantes;
-          const chip = d < 0 ? `<span class="chip error">Venció hace ${-d} días</span>`
-            : d <= 15 ? `<span class="chip pendiente">Faltan ${d} días</span>`
-            : `<span class="secundario-texto">Faltan ${d} días</span>`;
-          return `<tr>
-            <td><a href="#/factura/${p.factura_id}">${p.numero}</a></td>
-            <td class="col-texto">${esc(p.asegurado)}<span class="secundario-texto">${esc(p.objeto || '')}</span></td>
-            <td>${esc(p.ramo)}<span class="secundario-texto">${esc(p.subtipo)}</span></td>
-            <td>${p.endoso}</td>
-            <td>${fmtFecha(p.vigencia_hasta)} ${chip}</td>
-            <td class="num">${money(p.suma_asegurada)}</td>
-            <td class="num">${money(p.premio)}</td>
-          </tr>`;
-        }).join('')}</tbody></table></div>`
-      : '<div class="vacio"><p>No hay pólizas que venzan en los próximos 30 días.</p></div>';
-  };
-  app.innerHTML = `
-    <div class="encabezado">
-      <div>
-        <h1>Vencimientos</h1>
-        <p class="bajada">Último período facturado de cada póliza. Si no se presenta la baja, la aseguradora refactura automáticamente.</p>
-      </div>
-      <label style="flex-direction:row;display:flex;align-items:center;gap:.5rem">
-        <input type="checkbox" id="solo-proximas" style="width:auto"> Solo los próximos 30 días
-      </label>
-    </div>
-    <div id="tabla-venc"></div>`;
-  pintar(false);
-  document.getElementById('solo-proximas').addEventListener('change', (e) => pintar(e.target.checked));
 }
 
 // ---------- Entidades y productores ----------
@@ -323,8 +354,8 @@ async function vistaEntidades() {
     q(sb.from('productores').select('*').order('nombre')),
   ]);
   app.innerHTML = `
-    <h1>Entidades</h1>
-    <p class="bajada">Aseguradoras, clientes y organismos asegurados que figuran en las facturas.</p>
+    <h1>Organismos y empresas</h1>
+    <p class="bajada">Aseguradoras, clientes y organismos comitentes que figuran en las facturas.</p>
     <div class="tabla-scroll"><table>
       <thead><tr><th>Razón social</th><th>CUIT</th><th>Ubicación</th><th>Condición IVA</th></tr></thead>
       <tbody>${entidades.map((e) => `<tr>
@@ -339,214 +370,6 @@ async function vistaEntidades() {
 `;
 }
 
-// ---------- Alta de factura ----------
-const CAMPOS_IMPORTE = ['suma_asegurada', 'prima', 'gastos_notariales', 'impuestos', 'perc_iibb', 'iva', 'iva_rg'];
-
-async function vistaNueva() {
-  const [entidades, productores, riesgos] = await Promise.all([
-    q(sb.from('entidades').select('id, razon_social').order('razon_social')),
-    q(sb.from('productores').select('id, nombre').order('nombre')),
-    q(sb.from('riesgos').select('*').order('ramo').order('subtipo')),
-  ]);
-  if (!entidades.length || !riesgos.length) {
-    app.innerHTML = `<h1>Cargar factura</h1>
-      <div class="vacio"><p>Todavía no hay entidades cargadas. Importá la primera factura desde su PDF.</p>
-      <a class="boton" href="#/importar">Importar PDF</a></div>`;
-    return;
-  }
-
-  const opcionesEnt = (sel) => `<option value="">Elegir…</option>` + entidades.map((e) =>
-    `<option value="${e.id}" ${e.id === sel ? 'selected' : ''}>${esc(e.razon_social)}</option>`).join('');
-  const opcionesRiesgo = riesgos.map((r) => `<option value="${r.id}">${esc(r.ramo)}, ${esc(r.subtipo)}</option>`).join('');
-  const hoy = new Date().toISOString().slice(0, 10);
-
-  app.innerHTML = `
-    <h1>Cargar factura</h1>
-    <p class="bajada">Copiá los datos tal como figuran en el PDF. Los importes aceptan formato argentino (1.234,56).
-      El premio de cada póliza se calcula solo y el sistema avisa si algo no cuadra.</p>
-    <div id="msg-nueva"></div>
-    <form id="form-factura" novalidate>
-      <fieldset>
-        <legend>Comprobante</legend>
-        <div class="grilla">
-          <label>Tipo <select name="tipo"><option>A</option><option>B</option><option>C</option><option>M</option></select></label>
-          <label>Punto de venta <input name="punto_venta" inputmode="numeric" required placeholder="0004"></label>
-          <label>Número <input name="numero" inputmode="numeric" required placeholder="00259740"></label>
-          <label>Fecha <input type="date" name="fecha" required value="${hoy}"></label>
-          <label class="doble">Emisor (aseguradora) <select name="emisor_id" required>${opcionesEnt()}</select></label>
-          <label class="doble">Cliente <select name="cliente_id" required>${opcionesEnt()}</select></label>
-          <label class="doble">Productor <select name="productor_id"><option value="">Sin productor</option>
-            ${productores.map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select></label>
-          <label>CAE <input name="cae" inputmode="numeric"></label>
-          <label>Vencimiento del CAE <input type="date" name="cae_vencimiento"></label>
-        </div>
-      </fieldset>
-
-      <div id="items"></div>
-      <div class="acciones" style="margin-bottom:1.5rem">
-        <button type="button" class="boton secundario" id="agregar-item">Agregar póliza</button>
-      </div>
-
-      <fieldset>
-        <legend>Totales y deuda informada</legend>
-        <div class="grilla">
-          <label>Otros gastos <input name="otros_gastos" inputmode="decimal" value="0,00"></label>
-          <label>Premio total impreso <input name="premio_total" inputmode="decimal" required></label>
-          <label>Deuda vencida <input name="deuda_vencido" inputmode="decimal"></label>
-          <label>Deuda a vencer <input name="deuda_a_vencer" inputmode="decimal"></label>
-          <label>Deuda total <input name="deuda_total" inputmode="decimal"></label>
-        </div>
-        <p id="control-total" class="premio-calculado" aria-live="polite"></p>
-      </fieldset>
-
-      <button class="boton" type="submit">Guardar factura</button>
-    </form>`;
-
-  const contenedor = document.getElementById('items');
-  const form = document.getElementById('form-factura');
-
-  const leerItem = (el) => {
-    const it = Object.fromEntries(CAMPOS_IMPORTE.map((k) => [k, parseAR(el.querySelector(`[data-k="${k}"]`).value)]));
-    ['poliza_numero', 'endoso', 'vigencia_desde', 'vigencia_hasta', 'asegurado_id', 'riesgo_id', 'objeto']
-      .forEach((k) => { it[k] = el.querySelector(`[data-k="${k}"]`).value.trim(); });
-    it.premio = premioDeItem(it);
-    return it;
-  };
-
-  const actualizarTotales = () => {
-    const items = [...contenedor.children].map(leerItem);
-    [...contenedor.children].forEach((el, i) => {
-      el.querySelector('.premio-calculado').textContent = `Premio: $ ${money(items[i].premio)}`;
-      el.querySelector('legend').textContent = `Póliza ${i + 1}`;
-    });
-    const calculado = round2(sumar(items, 'premio') + parseAR(form.otros_gastos.value));
-    const impreso = parseAR(form.premio_total.value);
-    const nodo = document.getElementById('control-total');
-    nodo.textContent = !form.premio_total.value
-      ? `Suma de las pólizas: $ ${money(calculado)}`
-      : Math.abs(calculado - impreso) <= TOLERANCIA
-        ? `Cuadra: las pólizas suman $ ${money(calculado)}.`
-        : `No cuadra: las pólizas suman $ ${money(calculado)} y el total impreso es $ ${money(impreso)}.`;
-    nodo.style.color = form.premio_total.value && Math.abs(calculado - impreso) > TOLERANCIA ? 'var(--rojo)' : '';
-  };
-
-  const agregarItem = () => {
-    const el = document.createElement('fieldset');
-    el.className = 'item-poliza';
-    el.innerHTML = `
-      <legend>Póliza</legend>
-      <div class="grilla">
-        <label>Número de póliza <input data-k="poliza_numero" inputmode="numeric" required></label>
-        <label>Endoso <input data-k="endoso" inputmode="numeric" required></label>
-        <label>Vigencia desde <input type="date" data-k="vigencia_desde" required></label>
-        <label>Vigencia hasta <input type="date" data-k="vigencia_hasta" required></label>
-        <label class="doble">Asegurado <select data-k="asegurado_id" required>${opcionesEnt()}</select></label>
-        <label class="doble">Riesgo <select data-k="riesgo_id" required>${opcionesRiesgo}</select></label>
-        <label class="ancho">Objeto (licitación, expediente, nota de pedido) <input data-k="objeto"></label>
-        <label>Suma asegurada <input data-k="suma_asegurada" inputmode="decimal" required></label>
-        <label>Prima <input data-k="prima" inputmode="decimal" required></label>
-        <label>Gastos notariales <input data-k="gastos_notariales" inputmode="decimal" value="0,00"></label>
-        <label>Impuestos <input data-k="impuestos" inputmode="decimal"></label>
-        <label>Percepción IIBB <input data-k="perc_iibb" inputmode="decimal" value="0,00"></label>
-        <label>IVA <input data-k="iva" inputmode="decimal"></label>
-        <label>IVA RG 3337 <input data-k="iva_rg" inputmode="decimal" value="0,00"></label>
-      </div>
-      <div class="pie-item">
-        <span class="premio-calculado"></span>
-        <div class="acciones">
-          <button type="button" class="boton secundario" data-accion="sugerir"
-            title="Prima 1 ‰ de la suma asegurada, impuestos 12,7 % e IVA 21 %">Sugerir importes</button>
-          <button type="button" class="boton peligro" data-accion="quitar">Quitar</button>
-        </div>
-      </div>`;
-    el.addEventListener('click', (e) => {
-      const accion = e.target.dataset.accion;
-      if (accion === 'quitar' && contenedor.children.length > 1) { el.remove(); actualizarTotales(); }
-      if (accion === 'sugerir') {
-        const suma = parseAR(el.querySelector('[data-k="suma_asegurada"]').value);
-        const primaActual = parseAR(el.querySelector('[data-k="prima"]').value) || 0;
-        const s = sugerirImportes(suma, primaActual);
-        ['prima', 'impuestos', 'iva'].forEach((k) => { el.querySelector(`[data-k="${k}"]`).value = money(s[k]); });
-        actualizarTotales();
-      }
-    });
-    // Vigencia trimestral por defecto
-    el.querySelector('[data-k="vigencia_desde"]').addEventListener('change', (e) => {
-      const hasta = el.querySelector('[data-k="vigencia_hasta"]');
-      if (!hasta.value && e.target.value) {
-        const d = new Date(`${e.target.value}T12:00:00`);
-        d.setMonth(d.getMonth() + 3);
-        hasta.value = d.toISOString().slice(0, 10);
-      }
-    });
-    contenedor.appendChild(el);
-    actualizarTotales();
-  };
-
-  form.addEventListener('input', actualizarTotales);
-  document.getElementById('agregar-item').addEventListener('click', agregarItem);
-  agregarItem();
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const msg = document.getElementById('msg-nueva');
-    const faltan = [...form.querySelectorAll('[required]')].filter((c) => !c.value.trim());
-    if (faltan.length) {
-      msg.innerHTML = aviso('error', `Faltan ${faltan.length} datos obligatorios. El primero quedó seleccionado.`);
-      faltan[0].focus();
-      return;
-    }
-    const items = [...contenedor.children].map(leerItem);
-    const errores = items.flatMap((it, i) => validarItem(it).filter((p) => p.nivel === 'error')
-      .map((p) => `Póliza ${i + 1}: ${p.texto}`));
-    if (items.some((it) => CAMPOS_IMPORTE.some((k) => Number.isNaN(it[k])))) errores.push('Hay importes con formato inválido.');
-    if (errores.length) {
-      msg.innerHTML = aviso('error', `Revisá antes de guardar:<ul>${errores.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`);
-      msg.scrollIntoView({ behavior: 'smooth' });
-      return;
-    }
-
-    const datos = new FormData(form);
-    const hayDeuda = ['deuda_vencido', 'deuda_a_vencer', 'deuda_total'].some((k) => datos.get(k));
-    const payload = {
-      tipo: datos.get('tipo'),
-      punto_venta: parseInt(datos.get('punto_venta'), 10),
-      numero: parseInt(datos.get('numero'), 10),
-      fecha: datos.get('fecha'),
-      emisor_id: Number(datos.get('emisor_id')),
-      cliente_id: Number(datos.get('cliente_id')),
-      productor_id: datos.get('productor_id') || null,
-      cae: datos.get('cae') || null,
-      cae_vencimiento: datos.get('cae_vencimiento') || null,
-      otros_gastos: parseAR(datos.get('otros_gastos')),
-      premio_total: parseAR(datos.get('premio_total')),
-      deuda: hayDeuda ? {
-        vencido: parseAR(datos.get('deuda_vencido')),
-        a_vencer: parseAR(datos.get('deuda_a_vencer')),
-        total: datos.get('deuda_total') ? parseAR(datos.get('deuda_total')) : null,
-      } : null,
-      items: items.map((it) => ({
-        ...it,
-        poliza_numero: Number(it.poliza_numero),
-        endoso: Number(it.endoso),
-        asegurado_id: Number(it.asegurado_id),
-        riesgo_id: Number(it.riesgo_id),
-      })),
-    };
-
-    const boton = form.querySelector('button[type="submit"]');
-    boton.disabled = true;
-    try {
-      const id = await q(sb.rpc('crear_factura', { p: payload }));
-      location.hash = `#/factura/${id}`;
-    } catch (err) {
-      msg.innerHTML = aviso('error', esc(err.message));
-      msg.scrollIntoView({ behavior: 'smooth' });
-    } finally {
-      boton.disabled = false;
-    }
-  });
-}
 
 // ---------- Importación de PDF ----------
 async function vistaImportar() {
@@ -610,7 +433,7 @@ async function vistaImportar() {
   const pintar = (l) => {
     if (l.estado === 'ilegible') {
       l.el.innerHTML = `<h3>${esc(l.archivo.name)}</h3>
-        ${aviso('error', `No se pudo leer este PDF. ${esc(l.error)} Podés cargarla con la <a href="#/nueva">carga manual</a>.`)}`;
+        ${aviso('error', `No se pudo leer este PDF. ${esc(l.error)} Verificá que sea una factura de la aseguradora, tal como llega por correo.`)}`;
       return;
     }
     const f = l.f;

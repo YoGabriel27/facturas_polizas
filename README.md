@@ -1,25 +1,29 @@
-# Facturas de seguros de caución
+# Pólizas de caución
 
-Aplicación web para registrar y controlar las facturas de seguros de caución: cada factura, sus pólizas, los vencimientos y la deuda informada por la aseguradora. Es HTML, CSS y JavaScript sin framework. Los datos se guardan en Supabase (Postgres) y la app se publica en Vercel.
+App para revisar las facturas de seguros de caución como quien revisa el resumen de su tarjeta: cada factura muestra su total y, debajo, las pólizas que se están cobrando agrupadas por obra. Está pensada para quienes auditan el estado de las obras y deciden qué pólizas dar de baja. Es HTML, CSS y JavaScript sin framework; los datos están en Supabase (Postgres) y se publica en Vercel. Se puede instalar en el escritorio o en el celular.
 
 ## Qué hace
 
 - **Acceso abierto:** cualquiera que tenga la dirección puede ver todo y cargar facturas nuevas. Nadie puede modificar ni eliminar lo que ya está cargado; las correcciones se hacen desde el panel de Supabase.
-- **Facturas:** listado con un control que indica si las pólizas suman el premio total impreso.
-- **Detalle de factura:** emisor y cliente, las pólizas con su vigencia, el desglose de importes, el importe en letras, la deuda informada al pie y el PDF original. Cada póliza se valida:
-  - premio = subtotal + impuestos + IVA;
-  - IVA al 21 %;
-  - prima ≥ 1 ‰ de la suma asegurada.
-- **Importar PDF:** se eligen uno o varios PDF de la aseguradora (o se arrastran). La app lee cabecera, pólizas, totales, deuda y CAE, controla que todo cuadre y muestra un resumen antes de guardar. La factura y su PDF se guardan en una sola operación. Los asegurados, riesgos y productores nuevos se dan de alta solos; los que ya existen se reutilizan sin cambios.
-- **Carga manual:** formulario para cargar una factura con entidades ya existentes, con cálculo automático del premio.
-- **Vencimientos:** el último período facturado de cada póliza y los días que faltan para su vencimiento.
-- **Entidades:** consulta de aseguradoras, clientes y organismos asegurados.
+- **Facturas:** listado de las facturas recibidas, de la más reciente a la más antigua, con su total.
+- **Factura (como un resumen de tarjeta):**
+  - el total, la aseguradora, el período de cobertura y la deuda informada al emitir la factura;
+  - cuánto se va en cada tipo de garantía (fondo de reparo, anticipo, ejecución de contrato, etc.);
+  - las pólizas agrupadas por obra (mismo organismo y mismo contrato), con buscador y orden por importe u organismo;
+  - al abrir una póliza: su desglose y en qué otras facturas cargadas se cobró, con el total acumulado;
+  - el PDF original de la factura.
+- **Organismos:** consulta de aseguradoras, clientes y organismos comitentes.
+- **Importar PDF:** la única forma de cargar facturas. Se eligen uno o varios PDF de la aseguradora (o se arrastran); la app lee cabecera, pólizas, totales, deuda y CAE, controla que todo cuadre y muestra un resumen antes de guardar. La factura y su PDF se guardan en una sola operación.
+- **Instalable:** desde Chrome o Edge aparece el botón **Instalar app**; en iPhone y iPad, el mismo botón explica cómo agregarla a la pantalla de inicio desde Safari.
 
 ## Estructura
 
 ```
 public/                  Sitio estático que publica Vercel
   index.html
+  manifest.webmanifest   Datos de instalación (nombre, colores, íconos)
+  sw.js                  Service worker: instalación y apertura rápida
+  icons/                 Íconos de la app en todos los tamaños
   css/styles.css
   js/app.js              Vistas, login y conexión con Supabase
   js/calc.js             Cálculos, formatos argentinos, CUIT, importe en letras
@@ -33,6 +37,7 @@ supabase/
     20261009000003_importar_pdf.sql  Importación desde PDF
     20261009000004_acceso_por_enlace.sql  PDF dentro de la base (y acceso por enlace, ya reemplazado)
     20261009000005_lectura_abierta_solo_alta.sql  Lectura abierta, solo alta de facturas
+    20261009000006_sin_carga_manual.sql  Las facturas solo se cargan importando el PDF
   seed.sql               Factura A 0004-00259740 con sus 19 pólizas
 vercel.json
 ```
@@ -63,7 +68,8 @@ Vistas: `v_facturas_resumen` (control de totales) y `v_polizas_vigentes` (últim
    3. `supabase/migrations/20261009000003_importar_pdf.sql`
    4. `supabase/migrations/20261009000004_acceso_por_enlace.sql`
    5. `supabase/migrations/20261009000005_lectura_abierta_solo_alta.sql`
-   6. `supabase/seed.sql` (opcional: carga la factura de ejemplo; también se puede importar su PDF desde la app)
+   6. `supabase/migrations/20261009000006_sin_carga_manual.sql`
+   7. `supabase/seed.sql` (opcional: carga la factura de ejemplo; también se puede importar su PDF desde la app)
 
    Si usás la CLI de Supabase, alcanza con `supabase link` y `supabase db push`.
 3. En **Project Settings > API Keys**, copiá la **Project URL** y la clave **anon / publishable**.
@@ -102,14 +108,14 @@ npm run dev             # http://localhost:3000
 ## Seguridad y permisos
 
 - La app no tiene usuarios ni contraseñas: cualquiera que tenga la dirección puede ver todos los datos, incluidos los PDF.
-- Desde la app solo se puede **agregar**: facturas nuevas (importadas o manuales) y el PDF de una factura que todavía no lo tiene. Una factura ya cargada no se puede volver a cargar, y un PDF archivado no se puede reemplazar.
-- **Nada se modifica ni se elimina desde la app.** Las tablas son de solo lectura para la clave pública de Supabase, así que tampoco se puede hacer saltándose la app. Las únicas escrituras pasan por tres funciones de la base (`importar_factura`, `crear_factura` y `archivar_pdf`), que solo insertan registros nuevos.
+- Desde la app solo se puede **agregar**: facturas nuevas importadas desde su PDF, y el PDF de una factura que todavía no lo tiene. Una factura ya cargada no se puede volver a cargar, y un PDF archivado no se puede reemplazar.
+- **Nada se modifica ni se elimina desde la app.** Las tablas son de solo lectura para la clave pública de Supabase, así que tampoco se puede hacer saltándose la app. Las únicas escrituras pasan por dos funciones de la base (`importar_factura` y `archivar_pdf`), que solo insertan registros nuevos.
 - Las correcciones (un CUIT, el estado de pago, una factura mal cargada) se hacen desde el **Table Editor** o el **SQL Editor** de Supabase.
 - La página le indica a los buscadores que no la indexen.
 
 ## Cómo se lee el PDF
 
-El lector (`public/js/pdf-factura.js`) usa la capa de texto del PDF con las coordenadas de cada dato, igual que la lee una persona: cada póliza ocupa tres renglones y los importes se asignan a la columna según su alineación. Se probó contra la factura A 0004-00259740 y coincidieron los 247 campos con la carga manual.
+El lector (`public/js/pdf-factura.js`) usa la capa de texto del PDF con las coordenadas de cada dato, igual que la lee una persona: cada póliza ocupa tres renglones y los importes se asignan a la columna según su alineación. Se probó contra la factura A 0004-00259740 y coincidieron los 247 campos con los datos cargados a mano para verificarlo.
 
 Antes de guardar, se controla que:
 
@@ -125,7 +131,7 @@ Los PDF originales se guardan dentro de la base, en la tabla `factura_pdfs` (has
 
 - Los CUIT del PDF vienen enmascarados ("30-,714,838-0"), por eso se guardan vacíos. Se completan desde el Table Editor de Supabase, en la tabla `entidades`.
 - La deuda del pie viene con otro formato (16,477,101, sin decimales). El parser acepta ambos formatos.
-- Muchas obras tienen dos pólizas consecutivas: Ejecución de Contrato y Fondo de Reparo. Se pueden ver juntas en **Vencimientos**.
+- Muchas obras tienen dos pólizas consecutivas: Ejecución de Contrato y Fondo de Reparo. La app las muestra juntas, dentro de la misma obra.
 - Las reglas de prima (1 ‰ con mínimos de 8.000 a 22.000), impuestos (12,7 %) e IVA (21 %) surgen de esta factura. Si la aseguradora cambia alícuotas, ajustalas en `public/js/calc.js`.
 
 ## Próximos pasos posibles
@@ -133,3 +139,9 @@ Los PDF originales se guardan dentro de la base, en la tabla `factura_pdfs` (has
 - Importar el PDF directamente: leer la capa de texto y precargar el formulario.
 - Agrupar las pólizas por contrato u obra.
 - Generar un reporte mensual de primas por asegurado.
+
+## Instalación como app
+
+La app cumple los requisitos de una aplicación web instalable: `manifest.webmanifest` con nombre e íconos, y un service worker (`sw.js`). Los archivos propios se piden siempre primero a la red, así que cada publicación nueva se ve enseguida. Los datos de Supabase nunca se guardan en caché.
+
+Para cambiar el ícono, reemplazá los archivos de `public/icons/` manteniendo los mismos nombres y tamaños. Si cambiás archivos de la app y querés forzar que los dispositivos instalados descarten la copia guardada, subí el número de `VERSION` en `sw.js`.

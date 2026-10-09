@@ -48,7 +48,7 @@ function cuitDesde(texto, avisos, quien) {
   const limpio = texto.replace(/^CUIT\s*N[º°o]?\s*:?\s*/i, '').trim();
   const normal = normalizarCuit(limpio);
   if (normal && cuitValido(normal)) return normal;
-  avisos.push(`El CUIT ${quien} viene incompleto en el PDF ("${limpio}"). Cargalo a mano en Entidades.`);
+  avisos.push(`El CUIT ${quien} viene incompleto en el PDF ("${limpio}"), así que se guarda sin CUIT.`);
   return null;
 }
 

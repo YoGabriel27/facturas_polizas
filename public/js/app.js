@@ -1,6 +1,6 @@
 import {
   money, round2, parseAR, fmtFecha, comprobante, numeroALetras,
-  premioDeItem, sugerirImportes, sumar, validarItem, normalizarCuit, cuitValido, TOLERANCIA,
+  premioDeItem, sugerirImportes, sumar, validarItem, TOLERANCIA,
 } from './calc.js';
 import { leerArchivoPdf, armarPayload } from './pdf-factura.js';
 
@@ -17,26 +17,7 @@ if (!cfg?.SUPABASE_URL || !cfg?.SUPABASE_ANON_KEY) {
   throw new Error('Sin configuración');
 }
 
-// ---------- Acceso por enlace ----------
-// El enlace trae la clave como ?acceso=...; se guarda en este navegador y se
-// quita de la barra de direcciones para que no quede a la vista.
-const PARAM_ACCESO = 'acceso';
-
-function obtenerClave() {
-  const url = new URL(location.href);
-  const delEnlace = url.searchParams.get(PARAM_ACCESO);
-  if (delEnlace) {
-    try { localStorage.setItem(PARAM_ACCESO, delEnlace); } catch { /* navegación privada */ }
-    url.searchParams.delete(PARAM_ACCESO);
-    history.replaceState(null, '', url.pathname + url.search + url.hash);
-    return delEnlace;
-  }
-  try { return localStorage.getItem(PARAM_ACCESO); } catch { return null; }
-}
-
-const clave = obtenerClave();
 const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
-  global: { headers: { 'x-acceso': clave || '' } },
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
 });
 
@@ -44,11 +25,13 @@ const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY,
 function traducirError(error) {
   const m = error.message || '';
   if (error.code === '23505') return 'Ya existe un registro con esos datos (por ejemplo, el mismo comprobante o la misma razón social).';
-  if (error.code === '42501' || m.includes('row-level security')) return 'El enlace de acceso ya no es válido. Pedí uno nuevo a quien administra las facturas.';
+  if (error.code === '42501' || m.includes('row-level security') || m.includes('permission denied')) return 'La app permite ver y cargar facturas nuevas, pero no modificar ni eliminar lo que ya está cargado.';
+  if (m.includes('ya tiene su PDF archivado')) return 'Esta factura ya tiene su PDF archivado.';
+  if (m.includes('no es un PDF')) return 'El archivo no es un PDF válido.';
+  if (m.includes('5 MB')) return 'El PDF supera los 5 MB permitidos.';
   if (m.includes('premio_cuadra')) return 'Hay una póliza cuyo premio no coincide con subtotal + impuestos + IVA. Revisá los importes.';
   if (m.includes('vigencia_valida')) return 'Hay una póliza con vigencia "hasta" anterior a "desde".';
   if (m.includes('entidades_cuit_check')) return 'El CUIT debe tener el formato 30-12345678-9.';
-  if (m.includes('factura_pdfs_bytes_check')) return 'El PDF supera los 5 MB permitidos.';
   return m || 'Ocurrió un error inesperado.';
 }
 
@@ -58,26 +41,7 @@ async function q(consulta) {
   return data;
 }
 
-function sinAcceso(titulo, texto) {
-  nav.hidden = true;
-  app.innerHTML = `
-    <section class="login">
-      <h1>${esc(titulo)}</h1>
-      <p class="bajada">${esc(texto)}</p>
-    </section>`;
-}
-
-async function iniciar() {
-  if (!clave) {
-    return sinAcceso('Se necesita el enlace de acceso',
-      'Esta app se abre con el enlace que te compartieron. Pedíselo a quien administra las facturas.');
-  }
-  const { data, error } = await sb.rpc('acceso_valido');
-  if (error || !data) {
-    try { localStorage.removeItem(PARAM_ACCESO); } catch { /* sin almacenamiento */ }
-    return sinAcceso('El enlace no es válido',
-      'Puede que esté incompleto o que lo hayan dado de baja. Pedí un enlace nuevo a quien administra las facturas.');
-  }
+function iniciar() {
   nav.hidden = false;
   window.addEventListener('hashchange', router);
   router();
@@ -112,13 +76,10 @@ const aBase64 = (archivo) => new Promise((ok, mal) => {
   lector.readAsDataURL(archivo);
 });
 
-// Guarda el PDF original junto a la factura (reemplaza uno anterior si lo había)
+// Agrega el PDF original a una factura que todavía no lo tiene
 async function archivarPdf(facturaId, archivo) {
   if (archivo.size > 5 * 1024 * 1024) throw new Error('El PDF supera los 5 MB permitidos.');
-  await q(sb.from('factura_pdfs').upsert({
-    factura_id: facturaId, nombre: archivo.name, contenido_base64: await aBase64(archivo), bytes: archivo.size,
-  }));
-  await q(sb.from('facturas').update({ pdf_path: archivo.name }).eq('id', facturaId));
+  await q(sb.rpc('archivar_pdf', { p_factura_id: facturaId, p_nombre: archivo.name, p_base64: await aBase64(archivo) }));
 }
 
 // ---------- Listado de facturas ----------
@@ -297,15 +258,7 @@ async function vistaDetalle(id) {
         <div><span>Total</span><strong>$ ${money(deuda.total)}</strong></div>
       </div>` : ''}
 
-    <h2>Estado del pago</h2>
-    <div id="msg-estado"></div>
-    <div class="acciones">
-      ${f.estado !== 'pagada' ? `
-        <label style="max-width:200px">Fecha de pago <input type="date" id="fecha-pago" value="${new Date().toISOString().slice(0, 10)}"></label>
-        <button class="boton" data-estado="pagada" style="align-self:end">Marcar como pagada</button>` : ''}
-      ${f.estado !== 'pendiente' ? '<button class="boton secundario" data-estado="pendiente">Volver a pendiente</button>' : ''}
-      ${f.estado !== 'anulada' ? '<button class="boton peligro" data-estado="anulada" style="align-self:end">Anular factura</button>' : ''}
-    </div>`;
+    <div id="msg-estado"></div>`;
 
   document.getElementById('ver-pdf')?.addEventListener('click', async () => {
     const ventana = window.open('', '_blank');
@@ -320,17 +273,6 @@ async function vistaDetalle(id) {
     }
   });
 
-  app.querySelectorAll('[data-estado]').forEach((b) => b.addEventListener('click', async () => {
-    const estado = b.dataset.estado;
-    if (estado === 'anulada' && !confirm('¿Anular esta factura? Queda registrada, pero deja de contar como pendiente.')) return;
-    const cambios = { estado, fecha_pago: estado === 'pagada' ? document.getElementById('fecha-pago').value : null };
-    try {
-      await q(sb.from('facturas').update(cambios).eq('id', f.id));
-      router();
-    } catch (err) {
-      document.getElementById('msg-estado').innerHTML = aviso('error', esc(err.message));
-    }
-  }));
 }
 
 // ---------- Vencimientos ----------
@@ -382,78 +324,19 @@ async function vistaEntidades() {
   ]);
   app.innerHTML = `
     <h1>Entidades</h1>
-    <p class="bajada">Aseguradoras, clientes y organismos asegurados que figuran en las facturas. Completá los CUIT que faltan: el PDF los trae enmascarados.</p>
+    <p class="bajada">Aseguradoras, clientes y organismos asegurados que figuran en las facturas.</p>
     <div class="tabla-scroll"><table>
       <thead><tr><th>Razón social</th><th>CUIT</th><th>Ubicación</th><th>Condición IVA</th></tr></thead>
       <tbody>${entidades.map((e) => `<tr>
         <td>${esc(e.razon_social)}</td>
-        <td>${e.cuit ? esc(e.cuit) : `<button class="enlace" style="color:var(--verde)" data-cuit="${e.id}">Cargar CUIT</button>`}</td>
+        <td>${e.cuit ? esc(e.cuit) : '<span class="secundario-texto">Sin cargar</span>'}</td>
         <td>${esc([e.localidad, e.provincia].filter(Boolean).join(', '))}</td>
         <td>${esc(e.condicion_iva || '')}</td></tr>`).join('')}</tbody>
     </table></div>
 
     <h2>Productores</h2>
     <p class="bajada">${productores.map((p) => esc(p.nombre)).join('; ') || 'Sin productores cargados.'}</p>
-    <div id="msg-ent"></div>
-    <h2>Agregar entidad</h2>
-    <form id="form-ent">
-      <fieldset><div class="grilla">
-        <label class="doble">Razón social <input name="razon_social" required></label>
-        <label>CUIT <input name="cuit" placeholder="30-12345678-9"></label>
-        <label>Condición IVA
-          <select name="condicion_iva"><option value=""></option><option>Responsable Inscripto</option>
-          <option>Exento</option><option>Monotributo</option><option>Consumidor Final</option></select></label>
-        <label class="doble">Domicilio <input name="domicilio"></label>
-        <label>Localidad <input name="localidad"></label>
-        <label>Código postal <input name="codigo_postal"></label>
-        <label>Provincia <input name="provincia"></label>
-        <label>Código de cliente <input name="codigo_cliente"></label>
-      </div></fieldset>
-      <button class="boton" type="submit">Guardar entidad</button>
-    </form>
-
-    <h3>Agregar productor</h3>
-    <form id="form-prod" class="acciones">
-      <label style="flex:1;min-width:240px">Nuevo productor <input name="nombre" required placeholder="APELLIDO, Nombre"></label>
-      <button class="boton secundario" type="submit" style="align-self:end">Agregar productor</button>
-    </form>`;
-
-  const msg = (tipo, texto) => { document.getElementById('msg-ent').innerHTML = aviso(tipo, esc(texto)); };
-
-  const prepararCuit = (valor) => {
-    if (!valor) return null;
-    const cuit = normalizarCuit(valor);
-    if (!cuit) throw new Error('El CUIT debe tener 11 dígitos.');
-    if (!cuitValido(cuit)) throw new Error(`El CUIT ${cuit} no es válido: el dígito verificador no coincide.`);
-    return cuit;
-  };
-
-  document.getElementById('form-ent')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const datos = Object.fromEntries([...new FormData(e.target)].map(([k, v]) => [k, v.trim() || null]));
-    try {
-      datos.cuit = prepararCuit(datos.cuit);
-      await q(sb.from('entidades').insert(datos));
-      router();
-    } catch (err) { msg('error', err.message); }
-  });
-
-  document.getElementById('form-prod')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    try {
-      await q(sb.from('productores').insert({ nombre: new FormData(e.target).get('nombre').trim() }));
-      router();
-    } catch (err) { msg('error', err.message); }
-  });
-
-  app.querySelectorAll('[data-cuit]').forEach((b) => b.addEventListener('click', async () => {
-    const valor = prompt('CUIT (11 dígitos):');
-    if (!valor) return;
-    try {
-      await q(sb.from('entidades').update({ cuit: prepararCuit(valor) }).eq('id', b.dataset.cuit));
-      router();
-    } catch (err) { msg('error', err.message); }
-  }));
+`;
 }
 
 // ---------- Alta de factura ----------
@@ -467,8 +350,8 @@ async function vistaNueva() {
   ]);
   if (!entidades.length || !riesgos.length) {
     app.innerHTML = `<h1>Cargar factura</h1>
-      <div class="vacio"><p>Primero cargá la aseguradora, el cliente y los asegurados.</p>
-      <a class="boton" href="#/entidades">Ir a entidades</a></div>`;
+      <div class="vacio"><p>Todavía no hay entidades cargadas. Importá la primera factura desde su PDF.</p>
+      <a class="boton" href="#/importar">Importar PDF</a></div>`;
     return;
   }
 
@@ -800,12 +683,9 @@ async function vistaImportar() {
     pintar(l);
     const f = l.f;
     try {
-      l.id = await q(sb.rpc('importar_factura', { p: armarPayload(f, null) }));
-      try {
-        await archivarPdf(l.id, l.archivo);
-      } catch (err) {
-        l.errorGuardado = `La factura se guardó, pero no el PDF original: ${err.message}`;
-      }
+      if (l.archivo.size > 5 * 1024 * 1024) throw new Error('El PDF supera los 5 MB permitidos.');
+      const payload = { ...armarPayload(f, null), pdf: { nombre: l.archivo.name, base64: await aBase64(l.archivo) } };
+      l.id = await q(sb.rpc('importar_factura', { p: payload }));
       l.estado = 'guardada';
       [f.emisor.razon_social, f.cliente.razon_social, ...f.items.map((it) => it.asegurado)]
         .forEach((n) => n && conocidas.add(n.trim().toUpperCase()));

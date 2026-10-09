@@ -3,6 +3,7 @@ import {
   sumar, validarItem, TOLERANCIA,
 } from './calc.js';
 import { leerArchivoPdf, armarPayload } from './pdf-factura.js';
+import { cargarLectorExcel, leerReporteCC, fechaDesdeNombre, sugerirCentros, buscarCentros } from './centros-costo.js';
 
 const app = document.getElementById('app');
 const nav = document.getElementById('nav');
@@ -97,7 +98,6 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }
 
-iniciar();
 
 // Convierte un archivo en base64 (sin el prefijo data:)
 const aBase64 = (archivo) => new Promise((ok, mal) => {
@@ -127,10 +127,36 @@ const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
 // Agrupa las pólizas por obra: mismo organismo y mismo contrato (objeto)
 const claveObra = (it) => `${it.poliza.asegurado.razon_social}|${(it.poliza.objeto || '').toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
 
+// ---------- Centros de costo ----------
+let centros = null;        // Map código -> { codigo, descripcion, habilitado }
+let ultimoReporte = null;
+
+async function cargarCentros(forzar = false) {
+  if (centros && !forzar) return centros;
+  const filas = [];
+  for (let desde = 0; ; desde += 1000) {
+    const parte = await q(sb.from('centros_costo').select('codigo, descripcion, habilitado').order('codigo').range(desde, desde + 999));
+    filas.push(...parte);
+    if (parte.length < 1000) break;
+  }
+  centros = new Map(filas.map((c) => [c.codigo, c]));
+  ultimoReporte = (await q(sb.from('reportes_cc').select('*').order('cargado_en', { ascending: false }).limit(1)))[0] || null;
+  return centros;
+}
+
+const estadoCC = (cc) => (!cc ? 'sin' : cc.habilitado ? 'vigente' : 'baja');
+const TEXTO_ESTADO = { vigente: 'Obra vigente', baja: 'Obra dada de baja', sin: 'Sin CC asignado' };
+const chipCC = (cc) => (cc
+  ? `<span class="cc cc-${estadoCC(cc)}"><span class="cc-codigo">CC ${esc(cc.codigo)}</span> ${esc(cc.descripcion)}<span class="cc-estado">${TEXTO_ESTADO[estadoCC(cc)]}</span></span>`
+  : `<span class="cc cc-sin"><span class="cc-estado">${TEXTO_ESTADO.sin}</span></span>`);
+
+// Estado de la vista de factura (se conserva al volver a dibujarla)
+const filtrosFactura = { buscar: '', orden: 'importe', estado: 'todas' };
+
 // ---------- Listado de facturas ----------
 async function vistaFacturas() {
   const facturas = await q(sb.from('facturas')
-    .select('id, tipo, punto_venta, numero, fecha, premio_total, emisor:entidades!facturas_emisor_id_fkey(razon_social), cliente:entidades!facturas_cliente_id_fkey(razon_social), items:factura_items(count)')
+    .select('id, tipo, punto_venta, numero, fecha, premio_total, emisor:entidades!facturas_emisor_id_fkey(razon_social), items:factura_items(premio, poliza:polizas(cc:centros_costo(habilitado)))')
     .order('fecha', { ascending: false }));
 
   if (!facturas.length) {
@@ -149,15 +175,19 @@ async function vistaFacturas() {
     </div>
     <ul class="lista-facturas">
       ${facturas.map((f) => {
-        const cantidad = f.items?.[0]?.count ?? 0;
+        const enBaja = f.items.filter((it) => it.poliza?.cc && !it.poliza.cc.habilitado);
+        const sinCC = f.items.filter((it) => !it.poliza?.cc).length;
+        const nota = enBaja.length
+          ? `<span class="nota-baja">$ ${money(sumar(enBaja, 'premio'))} en obras dadas de baja</span>`
+          : sinCC ? `<span class="secundario-texto">${plural(sinCC, 'póliza sin CC', 'pólizas sin CC')}</span>` : '';
         return `<li>
           <a class="fila-factura" href="#/factura/${f.id}">
             <span class="fila-factura-mes">${mesAnio(f.fecha)}</span>
             <span class="fila-factura-detalle">
               ${esc(f.emisor.razon_social)}
-              <span class="secundario-texto">Factura ${esc(comprobante(f))} del ${fmtFecha(f.fecha)}, ${plural(cantidad, 'póliza', 'pólizas')}</span>
+              <span class="secundario-texto">Factura ${esc(comprobante(f))} del ${fmtFecha(f.fecha)}, ${plural(f.items.length, 'póliza', 'pólizas')}</span>
             </span>
-            <span class="fila-factura-total">$ ${money(f.premio_total)}</span>
+            <span class="fila-factura-total">$ ${money(f.premio_total)}${nota}</span>
           </a>
         </li>`;
       }).join('')}
@@ -166,40 +196,53 @@ async function vistaFacturas() {
 
 // ---------- Factura como resumen ----------
 async function vistaDetalle(id) {
-  const f = await q(sb.from('facturas').select(`
-    *,
-    emisor:entidades!facturas_emisor_id_fkey(razon_social),
-    cliente:entidades!facturas_cliente_id_fkey(razon_social),
-    deuda:deuda_snapshots(*),
-    items:factura_items(*, poliza:polizas(id, numero, objeto,
-      asegurado:entidades!polizas_asegurado_id_fkey(razon_social),
-      riesgo:riesgos(ramo, subtipo)))
-  `).eq('id', id).single());
+  const [f] = await Promise.all([
+    q(sb.from('facturas').select(`
+      *,
+      emisor:entidades!facturas_emisor_id_fkey(razon_social),
+      cliente:entidades!facturas_cliente_id_fkey(razon_social),
+      deuda:deuda_snapshots(*),
+      items:factura_items(*, poliza:polizas(id, numero, objeto, cc_codigo,
+        cc:centros_costo(codigo, descripcion, habilitado),
+        asegurado:entidades!polizas_asegurado_id_fkey(razon_social),
+        riesgo:riesgos(ramo, subtipo)))
+    `).eq('id', id).single()),
+    cargarCentros(),
+  ]);
 
   const items = [...f.items].sort((a, b) => a.orden - b.orden);
   const deuda = Array.isArray(f.deuda) ? f.deuda[0] : f.deuda;
+  const idsPolizas = items.map((it) => it.poliza.id);
 
-  // Historial de cada póliza en todas las facturas cargadas
-  const historial = await q(sb.from('factura_items')
-    .select('poliza_id, endoso, premio, vigencia_desde, vigencia_hasta, factura:facturas(id, fecha, tipo, punto_venta, numero)')
-    .in('poliza_id', items.map((it) => it.poliza.id)));
+  const [historial, cambiosCC] = await Promise.all([
+    q(sb.from('factura_items')
+      .select('poliza_id, endoso, premio, vigencia_desde, vigencia_hasta, factura:facturas(id, fecha, tipo, punto_venta, numero)')
+      .in('poliza_id', idsPolizas)),
+    q(sb.from('polizas_cc_cambios').select('poliza_id, cc_anterior, cc_nuevo, cambiado_en')
+      .in('poliza_id', idsPolizas).order('cambiado_en', { ascending: false })),
+  ]);
   const historialDe = (polizaId) => historial
     .filter((h) => h.poliza_id === polizaId)
     .sort((a, b) => String(b.factura.fecha).localeCompare(String(a.factura.fecha)) || b.endoso - a.endoso);
 
   // Obras
   const obras = [];
-  const indice = new Map();
+  const indiceObras = new Map();
   for (const it of items) {
     const clave = claveObra(it);
-    if (!indice.has(clave)) {
-      indice.set(clave, obras.length);
+    if (!indiceObras.has(clave)) {
+      indiceObras.set(clave, obras.length);
       obras.push({ organismo: it.poliza.asegurado.razon_social, objeto: it.poliza.objeto, items: [], total: 0 });
     }
-    const obra = obras[indice.get(clave)];
+    const obra = obras[indiceObras.get(clave)];
     obra.items.push(it);
     obra.total = round2(obra.total + Number(it.premio));
   }
+  const obraDe = (it) => obras[indiceObras.get(claveObra(it))];
+
+  // Cruce con centros de costo
+  const grupos = { baja: [], vigente: [], sin: [] };
+  items.forEach((it) => grupos[estadoCC(it.poliza.cc)].push(it));
 
   // Por tipo de garantía
   const tipos = new Map();
@@ -213,25 +256,29 @@ async function vistaDetalle(id) {
   const listaTipos = [...tipos.values()].sort((a, b) => b.total - a.total);
   const maxTipo = Math.max(...listaTipos.map((t) => t.total));
 
-  // Control de totales: solo se muestra si algo no cuadra
   const sumaItems = sumar(items, 'premio');
   const cuadra = Math.abs(round2(sumaItems + Number(f.otros_gastos)) - Number(f.premio_total)) <= TOLERANCIA;
   const conDiferencias = items.filter((it) => validarItem(it).some((p) => p.nivel === 'error'));
-
   const desde = items.map((it) => it.vigencia_desde).sort()[0];
   const hasta = items.map((it) => it.vigencia_hasta).sort().slice(-1)[0];
 
-  const cargo = (it) => {
+  const cargo = (it, mostrarCC = true) => {
     const hist = historialDe(it.poliza.id);
     const totalHist = round2(hist.reduce((a, h) => a + Number(h.premio), 0));
-    return `<li>
+    const cambios = cambiosCC.filter((c) => c.poliza_id === it.poliza.id);
+    const cc = it.poliza.cc;
+    return `<li class="cargo-${estadoCC(cc)}">
       <details class="cargo">
         <summary>
           <span class="cargo-descripcion">
             <strong>${esc(it.poliza.riesgo.subtipo)}</strong>
             <span class="secundario-texto">Póliza ${it.poliza.numero}, endoso ${it.endoso}. Cobertura ${periodo(it.vigencia_desde, it.vigencia_hasta)}</span>
+            ${mostrarCC ? chipCC(cc) : ''}
           </span>
-          <span class="cargo-monto">$ ${money(it.premio)}</span>
+          <span class="cargo-lado">
+            <span class="cargo-monto">$ ${money(it.premio)}</span>
+            <button type="button" class="boton-cc" data-asignar="${it.poliza.id}">${cc ? 'Cambiar CC' : 'Asignar CC'}</button>
+          </span>
         </summary>
         <div class="cargo-detalle">
           <dl class="desglose">
@@ -250,19 +297,36 @@ async function vistaDetalle(id) {
                 <span class="historial-monto">$ ${money(h.premio)}</span>
               </li>`).join('')}
             </ul>
+            ${cambios.length ? `<h4 class="titulo-cambios">Cambios de CC</h4>
+              <ul class="historial">${cambios.map((c) => `<li>
+                <span>${c.cc_anterior ? `De ${esc(c.cc_anterior)} a ${esc(c.cc_nuevo)}` : `Asignado ${esc(c.cc_nuevo)}`}</span>
+                <span class="secundario-texto">${fmtFecha(c.cambiado_en)}</span>
+              </li>`).join('')}</ul>` : ''}
           </div>
         </div>
       </details>
     </li>`;
   };
 
-  const pintarObras = (orden, texto) => {
-    const buscado = texto.trim().toUpperCase();
+  // Si todas las pólizas de la obra tienen el mismo CC, se muestra una sola vez en la cabecera
+  const ccUnico = (o) => new Set(o.items.map((it) => it.poliza.cc_codigo || '')).size === 1;
+  const ccDeObra = (o) => (ccUnico(o)
+    ? chipCC(o.items[0].poliza.cc)
+    : '<span class="cc cc-mixto"><span class="cc-estado">CC distintos por póliza</span></span>');
+
+  const pintarObras = () => {
+    const { orden, estado } = filtrosFactura;
+    const buscado = filtrosFactura.buscar.trim().toUpperCase();
     const lista = obras
       .map((o) => {
-        if (!buscado) return o;
-        const enObra = `${o.organismo} ${o.objeto || ''}`.toUpperCase().includes(buscado);
-        const visibles = enObra ? o.items : o.items.filter((it) => `${it.poliza.numero} ${it.poliza.riesgo.subtipo}`.toUpperCase().includes(buscado));
+        let visibles = estado === 'todas' ? o.items : o.items.filter((it) => estadoCC(it.poliza.cc) === estado);
+        if (buscado) {
+          const enObra = `${o.organismo} ${o.objeto || ''}`.toUpperCase().includes(buscado);
+          if (!enObra) {
+            visibles = visibles.filter((it) => `${it.poliza.numero} ${it.poliza.riesgo.subtipo} ${it.poliza.cc_codigo || ''} ${it.poliza.cc?.descripcion || ''}`
+              .toUpperCase().includes(buscado));
+          }
+        }
         return visibles.length ? { ...o, items: visibles, total: sumar(visibles, 'premio') } : null;
       })
       .filter(Boolean)
@@ -274,13 +338,22 @@ async function vistaDetalle(id) {
             <div>
               <h3>${esc(o.organismo)}</h3>
               <p class="secundario-texto">${esc(o.objeto || 'Sin contrato informado')}</p>
+              ${ccDeObra(o)}
             </div>
             <p class="obra-total">$ ${money(o.total)}<span class="secundario-texto">${plural(o.items.length, 'póliza', 'pólizas')}</span></p>
           </header>
-          <ul class="cargos">${o.items.map(cargo).join('')}</ul>
+          <ul class="cargos">${o.items.map((it) => cargo(it, !ccUnico(o))).join('')}</ul>
         </article>`).join('')
       : '<div class="vacio"><p>Ninguna póliza coincide con la búsqueda.</p></div>';
+    document.querySelectorAll('.cruce-cc button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.estado === estado)));
   };
+
+  const tarjetaCruce = (clave, titulo) => `
+    <button type="button" class="cruce-${clave}" data-estado="${clave}" aria-pressed="false">
+      <span class="cruce-titulo">${titulo}</span>
+      <span class="cruce-monto">$ ${money(sumar(grupos[clave], 'premio'))}</span>
+      <span class="cruce-detalle">${plural(grupos[clave].length, 'póliza', 'pólizas')}</span>
+    </button>`;
 
   app.innerHTML = `
     <a href="#/facturas" class="volver">Todas las facturas</a>
@@ -306,6 +379,16 @@ async function vistaDetalle(id) {
       `Revisá esta factura con el PDF original: ${!cuadra ? `las pólizas suman $ ${money(sumaItems)} y el total impreso es $ ${money(f.premio_total)}.` : ''}
        ${conDiferencias.length ? `Hay ${plural(conDiferencias.length, 'póliza', 'pólizas')} cuyo importe no coincide con su desglose.` : ''}`) : ''}
 
+    <h2>Cruce con centros de costo</h2>
+    ${centros.size ? `<p class="bajada">Según el Reporte CC ${ultimoReporte?.fecha_reporte ? `del ${fmtFecha(ultimoReporte.fecha_reporte)}` : 'cargado'}.
+        Tocá un recuadro para ver solo esas pólizas.</p>`
+      : aviso('advertencia', 'Todavía no se cargó ningún Reporte CC. Usá el botón <strong>↑ Reporte CC</strong> de la barra superior para subir el Excel de centros de costo.')}
+    <div class="cruce-cc">
+      ${tarjetaCruce('baja', 'Obras dadas de baja')}
+      ${tarjetaCruce('vigente', 'Obras vigentes')}
+      ${tarjetaCruce('sin', 'Sin CC asignado')}
+    </div>
+
     <h2>En qué se va el total</h2>
     <ul class="tipos">
       ${listaTipos.map((t) => `<li>
@@ -318,7 +401,13 @@ async function vistaDetalle(id) {
     <div class="encabezado encabezado-obras">
       <h2>Pólizas por obra</h2>
       <div class="filtros">
-        <label class="buscar">Buscar <input type="search" id="buscar" placeholder="Organismo, contrato o número de póliza"></label>
+        <label class="buscar">Buscar <input type="search" id="buscar" placeholder="Organismo, contrato, póliza o CC"></label>
+        <label>Estado según CC
+          <select id="estado-cc">
+            <option value="todas">Todas</option><option value="baja">Obras dadas de baja</option>
+            <option value="vigente">Obras vigentes</option><option value="sin">Sin CC asignado</option>
+          </select>
+        </label>
         <label>Ordenar
           <select id="orden"><option value="importe">Mayor importe</option><option value="organismo">Organismo (A-Z)</option></select>
         </label>
@@ -328,10 +417,32 @@ async function vistaDetalle(id) {
 
   const buscar = document.getElementById('buscar');
   const orden = document.getElementById('orden');
-  const repintar = () => pintarObras(orden.value, buscar.value);
-  buscar.addEventListener('input', repintar);
-  orden.addEventListener('change', repintar);
-  repintar();
+  const selEstado = document.getElementById('estado-cc');
+  buscar.value = filtrosFactura.buscar;
+  orden.value = filtrosFactura.orden;
+  selEstado.value = filtrosFactura.estado;
+  buscar.addEventListener('input', () => { filtrosFactura.buscar = buscar.value; pintarObras(); });
+  orden.addEventListener('change', () => { filtrosFactura.orden = orden.value; pintarObras(); });
+  selEstado.addEventListener('change', () => { filtrosFactura.estado = selEstado.value; pintarObras(); });
+  document.querySelectorAll('.cruce-cc button').forEach((b) => b.addEventListener('click', () => {
+    filtrosFactura.estado = filtrosFactura.estado === b.dataset.estado ? 'todas' : b.dataset.estado;
+    selEstado.value = filtrosFactura.estado;
+    pintarObras();
+    document.getElementById('obras').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+  pintarObras();
+
+  // Asignar o cambiar CC (el botón está dentro del renglón: no debe abrirlo ni cerrarlo)
+  document.getElementById('obras').addEventListener('click', (e) => {
+    const boton = e.target.closest('[data-asignar]');
+    if (!boton) return;
+    e.preventDefault();
+    const it = items.find((x) => String(x.poliza.id) === boton.dataset.asignar);
+    abrirAsignarCC(it, obraDe(it).items.filter((x) => x !== it), () => {
+      const y = window.scrollY;
+      vistaDetalle(id).then(() => window.scrollTo(0, y));
+    });
+  });
 
   document.getElementById('ver-pdf')?.addEventListener('click', async () => {
     const ventana = window.open('', '_blank');
@@ -346,6 +457,151 @@ async function vistaDetalle(id) {
     }
   });
 }
+
+// ---------- Diálogo: asignar CC ----------
+function abrirAsignarCC(it, otrasDeLaObra, alGuardar) {
+  const dialogo = document.getElementById('dialogo-cc');
+  const actual = it.poliza.cc;
+  const textoObra = `${it.poliza.asegurado.razon_social} ${it.poliza.objeto || ''}`;
+  const sugeridos = sugerirCentros(textoObra, centros);
+  let elegido = actual?.codigo || null;
+
+  const opcion = (cc) => `
+    <label class="opcion-cc">
+      <input type="radio" name="cc" value="${esc(cc.codigo)}" ${cc.codigo === elegido ? 'checked' : ''}>
+      <span class="opcion-cc-codigo">${esc(cc.codigo)}</span>
+      <span class="opcion-cc-desc">${esc(cc.descripcion)}</span>
+      <span class="cc-estado cc-${estadoCC(cc)}">${cc.habilitado ? 'Vigente' : 'Dada de baja'}</span>
+    </label>`;
+
+  dialogo.innerHTML = `
+    <h2>${actual ? 'Cambiar CC' : 'Asignar CC'}</h2>
+    <p class="dialogo-poliza"><strong>Póliza ${it.poliza.numero}, ${esc(it.poliza.riesgo.subtipo)}</strong>
+      <span class="secundario-texto">${esc(it.poliza.asegurado.razon_social)}. ${esc(it.poliza.objeto || '')}</span></p>
+    ${actual ? `<p>CC actual: ${chipCC(actual)}</p>` : ''}
+    ${centros.size ? `
+      <label>Buscar centro de costo
+        <input type="search" id="cc-buscar" placeholder="Código (por ejemplo 01-618) o parte de la descripción" autocomplete="off">
+      </label>
+      <div id="cc-opciones" class="opciones-cc" role="radiogroup" aria-label="Centros de costo"></div>
+      ${otrasDeLaObra.length ? `<label class="casilla"><input type="checkbox" id="cc-obra" checked>
+        Asignar también a ${otrasDeLaObra.length === 1 ? 'la otra póliza' : `las otras ${otrasDeLaObra.length} pólizas`} de esta obra</label>` : ''}`
+      : aviso('advertencia', 'Todavía no se cargó ningún Reporte CC. Cerrá este cuadro y usá el botón <strong>↑ Reporte CC</strong>.')}
+    <div id="cc-msg"></div>
+    <div class="acciones dialogo-acciones">
+      <button type="button" class="boton secundario" id="cc-cancelar">Cancelar</button>
+      ${centros.size ? '<button type="button" class="boton" id="cc-guardar">Guardar CC</button>' : ''}
+    </div>`;
+
+  const opciones = document.getElementById('cc-opciones');
+  const pintarOpciones = (texto) => {
+    if (!opciones) return;
+    const lista = texto.trim() ? buscarCentros(texto, centros) : sugeridos;
+    opciones.innerHTML = lista.length
+      ? `<p class="opciones-titulo">${texto.trim() ? 'Resultados' : 'Sugeridos para esta obra'}</p>${lista.map(opcion).join('')}`
+      : `<p class="opciones-titulo">${texto.trim() ? 'Ningún CC coincide con la búsqueda.' : 'Sin sugerencias: buscá el CC por código o descripción.'}</p>`;
+  };
+  pintarOpciones('');
+  opciones?.addEventListener('change', (e) => { elegido = e.target.value; });
+  document.getElementById('cc-buscar')?.addEventListener('input', (e) => pintarOpciones(e.target.value));
+  document.getElementById('cc-cancelar').addEventListener('click', () => dialogo.close());
+  document.getElementById('cc-guardar')?.addEventListener('click', async (e) => {
+    const msg = document.getElementById('cc-msg');
+    if (!elegido) { msg.innerHTML = aviso('error', 'Elegí un centro de costo de la lista.'); return; }
+    const ids = [it.poliza.id, ...(document.getElementById('cc-obra')?.checked ? otrasDeLaObra.map((x) => x.poliza.id) : [])];
+    e.target.disabled = true;
+    try {
+      await q(sb.rpc('asignar_cc', { p_polizas: ids, p_cc: elegido }));
+      dialogo.close();
+      alGuardar();
+    } catch (err) {
+      msg.innerHTML = aviso('error', esc(err.message));
+      e.target.disabled = false;
+    }
+  });
+  dialogo.showModal();
+  document.getElementById('cc-buscar')?.focus();
+}
+
+// ---------- Diálogo: subir Reporte CC ----------
+async function abrirReporteCC() {
+  const dialogo = document.getElementById('dialogo-reporte');
+  await cargarCentros();
+  const ult = ultimoReporte;
+  dialogo.innerHTML = `
+    <h2>Reporte de centros de costo</h2>
+    <p class="bajada">${ult
+      ? `Último reporte: ${esc(ult.nombre_archivo)}${ult.fecha_reporte ? ` del ${fmtFecha(ult.fecha_reporte)}` : ''}, con ${ult.cantidad} CC (${ult.habilitados} habilitados). Se cargó el ${fmtFecha(ult.cargado_en)}.`
+      : 'Todavía no se cargó ningún reporte.'}
+      El Excel debe tener las columnas CC, Descripción y Habilitado.</p>
+    <label class="zona-pdf">
+      <input type="file" id="reporte-archivo" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <strong>Elegir el Excel de CC</strong>
+      <span>Los CC nuevos se agregan y los existentes se actualizan. Las asignaciones de las pólizas se conservan.</span>
+    </label>
+    <div id="reporte-vista"></div>
+    <div class="acciones dialogo-acciones">
+      <button type="button" class="boton secundario" id="reporte-cerrar">Cerrar</button>
+      <button type="button" class="boton" id="reporte-cargar" hidden>Cargar reporte</button>
+    </div>`;
+
+  let lectura = null;
+  let archivo = null;
+  const vista = document.getElementById('reporte-vista');
+  const botonCargar = document.getElementById('reporte-cargar');
+
+  document.getElementById('reporte-archivo').addEventListener('change', async (e) => {
+    archivo = e.target.files[0];
+    botonCargar.hidden = true;
+    if (!archivo) return;
+    vista.innerHTML = '<p class="cargando">Leyendo el Excel…</p>';
+    try {
+      const XLSX = await cargarLectorExcel();
+      lectura = leerReporteCC(XLSX, new Uint8Array(await archivo.arrayBuffer()));
+      if (!lectura.filas.length) throw new Error('El Excel no tiene centros de costo válidos.');
+      const habil = lectura.filas.filter((c) => c.habilitado).length;
+      const nuevos = lectura.filas.filter((c) => !centros.has(c.codigo));
+      const aBaja = lectura.filas.filter((c) => centros.has(c.codigo) && centros.get(c.codigo).habilitado && !c.habilitado);
+      const aVigente = lectura.filas.filter((c) => centros.has(c.codigo) && !centros.get(c.codigo).habilitado && c.habilitado);
+      const fecha = fechaDesdeNombre(archivo.name);
+      const listar = (arr) => `<ul>${arr.slice(0, 8).map((c) => `<li>${esc(c.codigo)} ${esc(c.descripcion)}</li>`).join('')}${arr.length > 8 ? `<li>y ${arr.length - 8} más</li>` : ''}</ul>`;
+      vista.innerHTML = `
+        ${aviso('ok', `<strong>${esc(archivo.name)}</strong>${fecha ? `, del ${fmtFecha(fecha)}` : ''}: ${lectura.filas.length} centros de costo,
+          ${habil} habilitados (obras vigentes) y ${lectura.filas.length - habil} deshabilitados (obras dadas de baja).
+          ${centros.size ? `Respecto del listado actual: ${plural(nuevos.length, 'CC nuevo', 'CC nuevos')}.` : ''}`)}
+        ${aBaja.length ? aviso('advertencia', `Pasan a <strong>dados de baja</strong> ${plural(aBaja.length, 'CC', 'CC')}:${listar(aBaja)}`) : ''}
+        ${aVigente.length ? aviso('ok', `Vuelven a estar <strong>habilitados</strong> ${plural(aVigente.length, 'CC', 'CC')}:${listar(aVigente)}`) : ''}
+        ${lectura.invalidas.length ? aviso('advertencia', `Se omiten ${plural(lectura.invalidas.length, 'fila', 'filas')} con datos inválidos: ${esc(lectura.invalidas.slice(0, 5).join('; '))}${lectura.invalidas.length > 5 ? '…' : ''}`) : ''}`;
+      botonCargar.hidden = false;
+      botonCargar.disabled = false;
+    } catch (err) {
+      lectura = null;
+      vista.innerHTML = aviso('error', esc(err.message));
+    }
+  });
+
+  botonCargar.addEventListener('click', async () => {
+    if (!lectura) return;
+    botonCargar.disabled = true;
+    try {
+      const r = await q(sb.rpc('importar_reporte_cc', { p_nombre: archivo.name, p_fecha: fechaDesdeNombre(archivo.name), p_filas: lectura.filas }));
+      await cargarCentros(true);
+      vista.innerHTML = aviso('ok', `Reporte cargado: ${r.cantidad} centros de costo (${plural(r.nuevos, 'nuevo', 'nuevos')}, ${plural(r.cambios_estado, 'cambio de estado', 'cambios de estado')}).`);
+      botonCargar.hidden = true;
+      router();
+    } catch (err) {
+      vista.innerHTML = aviso('error', esc(err.message));
+      botonCargar.disabled = false;
+    }
+  });
+
+  document.getElementById('reporte-cerrar').addEventListener('click', () => dialogo.close());
+  dialogo.showModal();
+}
+
+document.getElementById('reporte-cc').addEventListener('click', () => {
+  abrirReporteCC().catch((err) => { app.insertAdjacentHTML('afterbegin', aviso('error', esc(err.message))); });
+});
 
 // ---------- Entidades y productores ----------
 async function vistaEntidades() {
@@ -530,3 +786,6 @@ async function vistaImportar() {
   ['dragleave', 'drop'].forEach((ev) => zona.addEventListener(ev, (e) => { e.preventDefault(); zona.classList.remove('arrastrando'); }));
   zona.addEventListener('drop', (e) => procesar([...e.dataTransfer.files]));
 }
+
+// Arranca cuando todo el módulo está definido
+iniciar();

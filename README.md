@@ -4,15 +4,16 @@ Aplicación web para registrar y controlar las facturas de seguros de caución: 
 
 ## Qué hace
 
-- **Facturas:** listado con estado de pago y un control que indica si las pólizas suman el premio total impreso.
-- **Detalle de factura:** emisor y cliente, las pólizas con su vigencia, el desglose de importes, el importe en letras y la deuda informada al pie. Cada póliza se valida:
+- **Acceso abierto:** cualquiera que tenga la dirección puede ver todo y cargar facturas nuevas. Nadie puede modificar ni eliminar lo que ya está cargado; las correcciones se hacen desde el panel de Supabase.
+- **Facturas:** listado con un control que indica si las pólizas suman el premio total impreso.
+- **Detalle de factura:** emisor y cliente, las pólizas con su vigencia, el desglose de importes, el importe en letras, la deuda informada al pie y el PDF original. Cada póliza se valida:
   - premio = subtotal + impuestos + IVA;
   - IVA al 21 %;
   - prima ≥ 1 ‰ de la suma asegurada.
-- **Importar PDF:** se eligen uno o varios PDF de la aseguradora (o se arrastran). La app lee cabecera, pólizas, totales, deuda y CAE, controla que todo cuadre y muestra un resumen antes de guardar. Crea sola los asegurados, riesgos y productores nuevos, detecta facturas ya cargadas y archiva el PDF original, que después se abre desde el detalle.
-- **Carga manual:** formulario con cálculo automático del premio. El botón "Sugerir importes" propone prima, impuestos e IVA. El alta es atómica: si algo no cuadra, no se guarda nada.
+- **Importar PDF:** se eligen uno o varios PDF de la aseguradora (o se arrastran). La app lee cabecera, pólizas, totales, deuda y CAE, controla que todo cuadre y muestra un resumen antes de guardar. La factura y su PDF se guardan en una sola operación. Los asegurados, riesgos y productores nuevos se dan de alta solos; los que ya existen se reutilizan sin cambios.
+- **Carga manual:** formulario para cargar una factura con entidades ya existentes, con cálculo automático del premio.
 - **Vencimientos:** el último período facturado de cada póliza y los días que faltan para su vencimiento.
-- **Entidades:** aseguradoras, clientes y organismos asegurados, con validación del dígito verificador del CUIT.
+- **Entidades:** consulta de aseguradoras, clientes y organismos asegurados.
 
 ## Estructura
 
@@ -30,7 +31,8 @@ supabase/
     20261009000001_esquema.sql     Tablas, vistas y función crear_factura
     20261009000002_seguridad.sql   Row Level Security inicial
     20261009000003_importar_pdf.sql  Importación desde PDF
-    20261009000004_acceso_por_enlace.sql  Acceso por enlace y PDF dentro de la base
+    20261009000004_acceso_por_enlace.sql  PDF dentro de la base (y acceso por enlace, ya reemplazado)
+    20261009000005_lectura_abierta_solo_alta.sql  Lectura abierta, solo alta de facturas
   seed.sql               Factura A 0004-00259740 con sus 19 pólizas
 vercel.json
 ```
@@ -47,7 +49,6 @@ vercel.json
 | `factura_items` | Póliza, endoso, vigencia e importes de cada renglón |
 | `deuda_snapshots` | Deuda vencida y a vencer informada al pie de cada factura |
 | `factura_pdfs` | PDF original de cada factura |
-| `enlaces_acceso` | Enlaces de acceso (solo el hash de cada clave) |
 
 Vistas: `v_facturas_resumen` (control de totales) y `v_polizas_vigentes` (último endoso de cada póliza).
 
@@ -61,11 +62,11 @@ Vistas: `v_facturas_resumen` (control de totales) y `v_polizas_vigentes` (últim
    2. `supabase/migrations/20261009000002_seguridad.sql`
    3. `supabase/migrations/20261009000003_importar_pdf.sql`
    4. `supabase/migrations/20261009000004_acceso_por_enlace.sql`
-   5. `supabase/seed.sql` (opcional: carga la factura de ejemplo; también se puede importar su PDF desde la app)
+   5. `supabase/migrations/20261009000005_lectura_abierta_solo_alta.sql`
+   6. `supabase/seed.sql` (opcional: carga la factura de ejemplo; también se puede importar su PDF desde la app)
 
    Si usás la CLI de Supabase, alcanza con `supabase link` y `supabase db push`.
-3. Generá el enlace de acceso (ver "Enlaces de acceso").
-4. En **Project Settings > API Keys**, copiá la **Project URL** y la clave **anon / publishable**.
+3. En **Project Settings > API Keys**, copiá la **Project URL** y la clave **anon / publishable**.
 
 > Nunca uses la clave `service_role` ni `sb_secret_…` en la app. El build se frena si detecta una.
 
@@ -91,31 +92,6 @@ El archivo `.gitignore` ya excluye `.env` y `public/js/config.js`, así que las 
    - `SUPABASE_ANON_KEY`
 4. Hacé clic en **Deploy**. Cada `git push` a `main` vuelve a publicar la app.
 
-## Enlaces de acceso
-
-La app no usa usuario ni contraseña: se entra con un enlace que lleva una clave.
-
-```
-https://TU-APP.vercel.app/?acceso=CLAVE
-```
-
-Al abrirlo, la app guarda la clave en ese navegador y la quita de la barra de direcciones; las próximas veces alcanza con la dirección sola. Quien tenga el enlace puede consultar, importar facturas y marcar pagos. Sin la clave no se ve nada, aunque se conozca la dirección.
-
-En la base solo se guarda el hash de la clave, así que una clave perdida no se puede recuperar: se genera otra. Todo se hace desde el **SQL Editor** de Supabase.
-
-```sql
--- Crear un enlace nuevo (la clave se muestra una sola vez)
-select public.crear_enlace('Descripción, por ejemplo: equipo de obra');
-
--- Ver los enlaces existentes
-select id, descripcion, activo, created_at from public.enlaces_acceso;
-
--- Dar de baja un enlace (por ejemplo, si circuló de más)
-update public.enlaces_acceso set activo = false where id = 1;
-```
-
-Se pueden tener varios enlaces activos a la vez, uno por grupo de personas, para poder dar de baja uno sin afectar a los demás.
-
 ### Desarrollo local
 
 ```bash
@@ -123,12 +99,13 @@ cp .env.example .env    # completá la URL y la clave
 npm run dev             # http://localhost:3000
 ```
 
-## Seguridad
+## Seguridad y permisos
 
-- Todas las tablas tienen RLS activado. Cada consulta debe traer una clave de enlace válida en el encabezado `x-acceso`; sin ella no se lee ni se escribe nada.
-- La clave anon de Supabase es pública por diseño: lo que protege los datos es la clave del enlace más el RLS.
-- El enlace funciona como una llave: quien lo reciba, aunque sea reenviado, tiene acceso completo. Si circula de más, dalo de baja y generá otro.
-- Los enlaces solo se crean desde el SQL Editor; nadie puede generarse uno desde la app.
+- La app no tiene usuarios ni contraseñas: cualquiera que tenga la dirección puede ver todos los datos, incluidos los PDF.
+- Desde la app solo se puede **agregar**: facturas nuevas (importadas o manuales) y el PDF de una factura que todavía no lo tiene. Una factura ya cargada no se puede volver a cargar, y un PDF archivado no se puede reemplazar.
+- **Nada se modifica ni se elimina desde la app.** Las tablas son de solo lectura para la clave pública de Supabase, así que tampoco se puede hacer saltándose la app. Las únicas escrituras pasan por tres funciones de la base (`importar_factura`, `crear_factura` y `archivar_pdf`), que solo insertan registros nuevos.
+- Las correcciones (un CUIT, el estado de pago, una factura mal cargada) se hacen desde el **Table Editor** o el **SQL Editor** de Supabase.
+- La página le indica a los buscadores que no la indexen.
 
 ## Cómo se lee el PDF
 
@@ -140,13 +117,13 @@ Antes de guardar, se controla que:
 - las pólizas sumen el premio total impreso;
 - el importe en letras coincida con el número.
 
-Si algo no cuadra, la factura no se guarda y se indica qué revisar. Ese control protege contra cambios de diseño del PDF: si la aseguradora modifica el formato, la lectura falla de forma visible en vez de cargar datos erróneos. En ese caso hay que ajustar los bordes de columna en `BORDES_POR_DEFECTO`.
+Si algo no cuadra, la factura no se guarda y se indica qué revisar. Como lo cargado no se puede corregir desde la app, este control evita que quede una factura mal leída. Ese control protege contra cambios de diseño del PDF: si la aseguradora modifica el formato, la lectura falla de forma visible en vez de cargar datos erróneos. En ese caso hay que ajustar los bordes de columna en `BORDES_POR_DEFECTO`.
 
 Los PDF originales se guardan dentro de la base, en la tabla `factura_pdfs` (hasta 5 MB cada uno), con la misma protección que el resto de los datos.
 
 ## Notas sobre los datos de la factura
 
-- Los CUIT del PDF vienen enmascarados ("30-,714,838-0"), por eso la carga inicial los deja vacíos. Completalos desde **Entidades**.
+- Los CUIT del PDF vienen enmascarados ("30-,714,838-0"), por eso se guardan vacíos. Se completan desde el Table Editor de Supabase, en la tabla `entidades`.
 - La deuda del pie viene con otro formato (16,477,101, sin decimales). El parser acepta ambos formatos.
 - Muchas obras tienen dos pólizas consecutivas: Ejecución de Contrato y Fondo de Reparo. Se pueden ver juntas en **Vencimientos**.
 - Las reglas de prima (1 ‰ con mínimos de 8.000 a 22.000), impuestos (12,7 %) e IVA (21 %) surgen de esta factura. Si la aseguradora cambia alícuotas, ajustalas en `public/js/calc.js`.

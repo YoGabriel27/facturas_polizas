@@ -4,22 +4,33 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <title>Facturas de seguros de caución</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧾</text></svg>">
+  <title>Pólizas de caución</title>
+  <meta name="description" content="Revisión de las pólizas de caución facturadas, obra por obra.">
+  <meta name="theme-color" content="#0f2d5c">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Pólizas">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
   <header class="barra">
-    <a class="marca" href="#/facturas">Seguros de caución</a>
+    <a class="marca" href="#/facturas">
+      <img src="/icons/favicon-48.png" alt="" width="28" height="28">
+      Pólizas de caución
+    </a>
     <nav id="nav" hidden>
       <a href="#/facturas" data-ruta="facturas">Facturas</a>
-      <a href="#/vencimientos" data-ruta="vencimientos">Vencimientos</a>
-      <a href="#/entidades" data-ruta="entidades">Entidades</a>
-      <a href="#/nueva" data-ruta="nueva">Carga manual</a>
+      <a href="#/entidades" data-ruta="entidades">Organismos</a>
       <a href="#/importar" data-ruta="importar" class="nav-accion">Importar PDF</a>
+      <button type="button" id="instalar" class="nav-instalar" hidden>Instalar app</button>
     </nav>
   </header>
 
@@ -27,8 +38,14 @@
     <p class="cargando">Cargando…</p>
   </main>
 
+  <dialog id="ayuda-ios" class="ayuda">
+    <h2>Instalar en el iPhone o iPad</h2>
+    <p>Desde Safari, tocá el botón <strong>Compartir</strong> (el cuadrado con la flecha hacia arriba) y elegí <strong>Agregar a inicio</strong>. La app queda con su ícono en la pantalla de inicio.</p>
+    <button type="button" class="boton" id="cerrar-ayuda">Entendido</button>
+  </dialog>
+
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="js/config.js"></script>
-  <script type="module" src="js/app.js"></script>
+  <script src="/js/config.js"></script>
+  <script type="module" src="/js/app.js"></script>
 </body>
 </html>
